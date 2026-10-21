@@ -1,0 +1,12 @@
+# 构建产物
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+.cxx/
+
+# 签名物料绝不入库
+*.jks
+*.keystore
+keystore.properties
