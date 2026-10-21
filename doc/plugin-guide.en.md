@@ -212,7 +212,7 @@ remedy after a force-stop or when a particular ROM blocks automatic activation.
 | `getApiVersion()` | sync | Returns `PluginConst.API_VERSION`; the host validates it before going further |
 | `getManifest()` | sync | Self-description |
 | `registerCallback(cb)` | sync | First thing the host does after binding; last call wins |
-| `loadEngine(models, config)` | oneway | Idempotent (ignored while loading / loaded) |
+| `loadEngine(models, config)` | oneway | Idempotent (ignored while loading / loaded). The host does send a real `config.threads` (see §6.1) |
 | `closeEngine()` | oneway | Frees model memory; during inference it cancels first |
 | `isEngineReady()` | sync | **Must be O(1)**, a volatile read |
 | `getStatus()` | sync | **Must be O(1)**, returns `EngineStatus` |
@@ -254,7 +254,9 @@ bypass it and spam.
   handed to a **single-threaded worker**. Inference never runs on a Binder thread
   (16 per process; occupying them stalls other IPC)
 - **Foreground service**: `startForeground` happens in `onBind` (see §12)
-- **Wake lock**: `PARTIAL_WAKE_LOCK` held with a 30-minute cap, released on all exits
+- **Wake lock**: `PARTIAL_WAKE_LOCK` released on all exits, with a 30-minute cap per
+  acquisition and **automatic renewal every 10 minutes** — so long jobs such as
+  downloading a 3.5 GB model don't lose the lock halfway through
 - **State machine**: `UNLOADED / LOADING / READY / RUNNING`; `isEngineReady()` is a
   volatile read
 - **Cancellation**: `cancel()` sets a flag; call `throwIfCancelled()` in long loops
@@ -310,6 +312,31 @@ class MyPluginService : PonkoPluginService() {
 speech; declaring `TTS` means the host will pick them for real read-aloud and the
 user hears an inexplicable arpeggio.
 
+### 6.1 `config.threads` now arrives with a real value
+
+The plugin page has a "inference threads" setting, and **the host passes it down
+when it binds the plugin**. The default is `cores - 1`, clamped to 1–6; the user
+can pick auto / 2 / 4 / 6.
+
+So `loadEngineBlocking` should **prefer `config.threads`**, falling back to your own
+default only when it is `<= 0`:
+
+```kotlin
+override fun loadEngineBlocking(models: ModelBundle?, config: EngineConfig): EngineInfo {
+    val threads = if (config.threads > 0) config.threads
+                  else minOf(4, Runtime.getRuntime().availableProcessors())
+    // …initialise the runtime with `threads`
+}
+```
+
+The host used to always send `0`, so plugins could only guess. Ignoring the real
+value now means the user changes the setting and sees no difference — while the UI
+says "takes effect on next engine load". That inconsistency is hard to explain.
+
+> A change does **not** reload the engine automatically (that would throw away the
+> model the user is already waiting on). The new value applies on the next
+> `loadEngine` call, which is exactly what the host UI says.
+
 ---
 
 ## 7. Engine lifecycle
@@ -340,6 +367,50 @@ for a model-less plugin is perfectly normal.
 
 ## 8. Performing a synthesis
 
+### What the request actually carries
+
+Since Ponko 2.0.0 the plugin page has a "preview parameters" block that really
+fills these fields in — they are no longer "declared but never used":
+
+| Field | Filled by | Notes |
+|---|---|---|
+| `text` | user input | capped at 40 chars (phone RTF; longer means minutes of waiting) |
+| `mode` | chosen in the UI | `0` plain / `1` clone / `2` continuation |
+| `referenceAudio` | host opens the user's file | **an already-open FD**; non-null only when `mode≥1` |
+| `referenceTranscript` | user input | filled for `mode=2`; may be empty for `mode=1` |
+| `seed` | user input | `0` = random |
+| `voiceDescription` | not exposed yet | always an empty string; keep concatenating as usual |
+| `cfg` / `timesteps` / `maxSteps` | **not filled** | stay `-1 / 0 / 0`, i.e. "use your defaults" |
+
+`cfg` / `timesteps` are deliberately not exposed: sensible ranges depend entirely on
+the model (VoxCPM2 is cfg≈2.0, steps 10–20), so the host cannot pick defaults. Those
+belong in the plugin's **own** `UiSchema`; the host stays out of it.
+
+So plugins must tolerate missing values: `<= 0`, `< 0`, and empty strings all mean
+"use my default". The host guarantees exactly one thing — when `mode≥1`,
+`referenceAudio` is non-null (the UI blocks it otherwise).
+
+### Two file descriptors, two owners
+
+The `referenceAudio` FD belongs to the **host**. Binder dups it when passing, so the
+one you hold is an independent handle:
+
+```kotlin
+val fd = req.referenceAudio ?: throw PluginException.invalidRequest("clone mode needs reference audio")
+val tmp = File(cacheDir, "ref.wav")
+// Copy into your own directory, then **close your copy**
+ParcelFileDescriptor.AutoCloseInputStream(fd).use { input ->
+    tmp.outputStream().use { input.copyTo(it) }
+}
+// From here on use your own tmp path: decode, resample to 16 kHz, feed the model
+```
+
+- **Don't** hold on to that FD as model input — it points at a user document
+  (possibly on cloud storage) and may vanish at any time
+- **Do** close your copy, or you leak a handle
+- The format is 16-bit PCM WAV by convention, but the user may pick an mp3 —
+  decoding to 16 kHz mono is **your** job (the host only hands you the file)
+
 ### Progress
 
 ```kotlin
@@ -358,7 +429,8 @@ human language, not `"decoding step 37"`.
 
 ### Cancellation
 
-Check on every iteration of a long loop:
+The plugin page has a "Stop" button, usable at any point during generation. All the
+plugin side has to do is this:
 
 ```kotlin
 for (i in 0 until n) {
@@ -367,8 +439,15 @@ for (i in 0 until n) {
 }
 ```
 
-Skip this and cancellation only takes effect after the job finishes — which is
-indistinguishable from broken cancellation.
+**You must check periodically, and often enough.** Skipping the check doesn't just
+make cancellation slow — the host sits on "stopping…" forever, the Preview button
+stays greyed out, and the user has to leave the page and come back. Check points that
+are too sparse (say, once per finished note) are indistinguishable from no support.
+
+> **Make sure `onError(CANCELLED)` really goes out.** The base class emits it when
+> `throwIfCancelled()` throws, so using `throwIfCancelled` is enough; if you return
+> early some other way, still let the base class run its cleanup — the host relies on
+> that callback to re-enable its buttons.
 
 ### Getting audio back: two paths
 
@@ -402,6 +481,22 @@ return ResultBundle(
 - **The FD belongs to the host.** After handing it over, don't close that
   `ParcelFileDescriptor` yourself. The file stays in your cache for the host to
   read; clean up the cache on your own schedule.
+
+### `debugInfo` is user-visible
+
+The plugin page has a collapsible "diagnostics" section at the bottom showing
+`debugInfo` and the `detail` of the last error. Therefore:
+
+- Put things that help **diagnosis** in there: model name / quantisation / actual
+  steps / sample rates before and after resampling / RTF
+- **Don't** put paths, tokens, or the user's text in it — the user can long-press and
+  copy this, and will paste it into a bug report
+- For failures, put the stack trace or raw native error in `PluginError.detail`
+  (the host only shows it in the diagnostics block, never as the main message)
+- `message` is still the one human-readable line; don't mix the two
+
+This is far more useful than logcat alone: ordinary users can't run adb, but they
+can take a screenshot.
 
 ### Streaming (optional)
 
@@ -602,6 +697,9 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] No launcher icon (activator only, no `CATEGORY_LAUNCHER`)
 - [ ] On a clean device: Enable → Preview → audible, first try
 - [ ] Preview twice or more (exercises the engine state machine)
+- [ ] **"Stop" mid-generation ends it promptly** (check points are dense enough, host buttons reset)
+- [ ] Clone mode with a picked reference audio actually produces output (host sends an FD; plugin decodes to 16 kHz)
+- [ ] After changing "inference threads", restart the plugin and confirm `config.threads` is honoured
 - [ ] Disabling actually frees the plugin's model memory
 - [ ] If AIDL changed: SDK republished and plugin rebuilt
 - [ ] Identify builds by **sha256**, not byte size (adjacent builds can be byte-identical)

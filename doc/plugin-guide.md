@@ -204,7 +204,7 @@ class MyPluginActivator : PonkoActivatorActivity()
 | `getApiVersion()` | 同步 | 返回 `PluginConst.API_VERSION`，宿主先校验这个再决定要不要继续 |
 | `getManifest()` | 同步 | 插件自述 |
 | `registerCallback(cb)` | 同步 | 宿主绑定后第一件事就是它；重复调用以最后一次为准 |
-| `loadEngine(models, config)` | oneway | 加载模型；幂等（已在加载/已加载时忽略） |
+| `loadEngine(models, config)` | oneway | 加载模型；幂等（已在加载/已加载时忽略）。`config.threads` 宿主会传真值（见 §6.1） |
 | `closeEngine()` | oneway | 释放模型内存；推理中调用 = 先取消再卸 |
 | `isEngineReady()` | 同步 | **必须 O(1)**，只读 volatile |
 | `getStatus()` | 同步 | **必须 O(1)**，返回 `EngineStatus` |
@@ -243,7 +243,8 @@ class MyPluginActivator : PonkoActivatorActivity()
 - **线程**：所有 `oneway` 从 Binder 线程进来后立刻转到**单线程 worker**，
   绝不在 Binder 线程跑推理（每进程只有 16 个 Binder 线程，占死会连累别的 IPC）
 - **前台服务**：`onBind` 里就 `startForeground`（见第 12 节的原因）
-- **唤醒锁**：持有 `PARTIAL_WAKE_LOCK`，四个出口都会撤，30 分钟上限防泄漏
+- **唤醒锁**：`PARTIAL_WAKE_LOCK`，四个出口都会撤；单次上限 30 分钟防泄漏，
+  **工作期间每 10 分钟自动续期**（所以下载 3.5 GB 模型这种长任务不会中途掉锁）
 - **状态机**：`UNLOADED / LOADING / READY / RUNNING`，`isEngineReady()` 是 volatile 读
 - **取消**：`cancel()` 置标志，插件在耗时循环里调 `throwIfCancelled()`
 - **回调去重**：`onResult` / `onError` 只发一次
@@ -297,6 +298,27 @@ class MyPluginService : PonkoPluginService() {
 **示例插件一律标 `TEST`，不要标 `TTS`。** 它生成的是固定音调不是语音，
 标成 TTS 会让宿主在真的"朗读回答"时选到它，用户会听到一段莫名其妙的琶音。
 
+### 6.1 `config.threads` 现在会收到真值
+
+宿主在插件页给了「推理线程」选项，**连上插件时就把值传下来**，
+默认是 `核数 - 1`（夹在 1–6，用户可选 自动/2/4/6）。
+
+所以 `loadEngineBlocking` 里应该**优先用 `config.threads`**，只有它 `<= 0` 才退回自己的默认：
+
+```kotlin
+override fun loadEngineBlocking(models: ModelBundle?, config: EngineConfig): EngineInfo {
+    val threads = if (config.threads > 0) config.threads
+                  else minOf(4, Runtime.getRuntime().availableProcessors())
+    // …用 threads 初始化运行时
+}
+```
+
+以前宿主恒传 `0`，插件只能猜；现在传了真值却忽略它，用户改了线程数会发现"没变化"，
+而界面上明明写着"下次加载引擎生效"——这种不一致最难解释。
+
+> 值变了**不会自动重载引擎**（重载 = 用户正在等的模型又要重来一遍）。
+> 新值在下一次 `loadEngine` 时生效，宿主界面上也是这么写的。
+
 ---
 
 ## 7. 引擎生命周期
@@ -323,6 +345,49 @@ UNLOADED ──loadEngine──► LOADING ──成功──► READY ──syn
 
 ## 8. 做一次合成
 
+### 请求里会有什么
+
+宿主（Ponko 2.0.0 起）的插件页有一块「试听参数」，它把这些字段真的填上了 ——
+不再是"接口里存在但没人用"：
+
+| 字段 | 谁填 | 备注 |
+|---|---|---|
+| `text` | 用户输入 | 限 40 字（手机 RTF 决定的，再长要等几分钟） |
+| `mode` | 用户在界面上选 | `0` 纯 TTS / `1` 克隆 / `2` 极致克隆 |
+| `referenceAudio` | 用户选文件后由宿主打开 | **已 open 的 FD**，只在 `mode≥1` 时非空 |
+| `referenceTranscript` | 用户输入 | 只在 `mode=2` 时填；`mode=1` 可能为空 |
+| `seed` | 用户输入 | `0` = 随机 |
+| `voiceDescription` | 暂未暴露 | 恒为空串，插件照常拼接即可 |
+| `cfg` / `timesteps` / `maxSteps` | **没填** | 保持 `-1 / 0 / 0`，也就是"用你的默认" |
+
+`cfg` / `timesteps` 没暴露是故意的：合理范围强依赖具体模型
+（VoxCPM2 是 cfg≈2.0、steps 10–20），宿主猜不出默认值。这些该由插件在
+**自己的** `UiSchema` 里暴露，宿主不插手。
+
+所以插件必须对"字段可能没填"做容错：`<= 0` / `< 0` / 空串 一律当"用我的默认"。
+宿主只有一处保证：`mode≥1` 时 `referenceAudio` 一定非空（界面层会挡住）。
+
+### 两个 FD 的生命周期
+
+`referenceAudio` 那个 FD 是**宿主的**。Binder 传参时系统会 dup 一份给你，
+所以你手上这个是独立句柄 ——
+
+```kotlin
+val fd = req.referenceAudio ?: throw PluginException.invalidRequest("克隆模式缺少参考音频")
+val tmp = File(cacheDir, "ref.wav")
+// fdopen 后复制到自己目录，然后**关掉自己这份**
+ParcelFileDescriptor.AutoCloseInputStream(fd).use { input ->
+    tmp.outputStream().use { input.copyTo(it) }
+}
+// 之后全用自己的 tmp 路径：解码、重采样到 16 kHz、送进模型
+```
+
+- **不要**长期持有这个 FD 当模型输入 —— 它指向用户的文档（可能是网盘里的），
+  随时可能失效
+- **要**关掉自己这份，否则句柄泄漏
+- 格式按 `SynthesisRequest` 的约定：优先 16-bit PCM WAV；用户可能选 mp3，
+  解码成 16 kHz 单声道是**插件**的责任（宿主只负责把文件给你）
+
 ### 进度
 
 ```kotlin
@@ -340,7 +405,7 @@ out.stage(Stage.DONE, "完成")
 
 ### 取消
 
-耗时循环里每轮都调：
+宿主插件页有「停止」按钮，生成中可以随时点。插件侧要做的只有一件事：
 
 ```kotlin
 for (i in 0 until n) {
@@ -349,9 +414,16 @@ for (i in 0 until n) {
 }
 ```
 
-不检查的话，用户点了取消要等到跑完才生效 —— 那和"取消失效"没区别。
+**必须周期性地查**，而且要查得够密。不检查的后果不是"慢一点"——
+宿主那边会一直停在"正在停止…"，「试听」按钮始终灰着，用户只能退出页面重进。
+检查点太稀疏（比如只在每个音结束后查一次）体验上等同于没实现取消。
+
+> **一定要让 `onError(CANCELLED)` 真的发出去。** 基类在 `throwIfCancelled()` 抛出后
+> 会自动发，所以只要用 `throwIfCancelled` 就够了；如果自己写了别的方式提前 return，
+> 记得仍然要让基类走到收尾 —— 宿主靠这个回调复位按钮。
 
 ### 音频回传：两条路
+
 
 | 方式 | 条件 | 用哪个 |
 |---|---|---|
@@ -381,6 +453,18 @@ return ResultBundle(
 - **不能塞 ByteArray 传大音频**：Binder 全进程 1 MB 配额会炸。
 - **FD 归宿主**：插件交出去之后不要自己 close 那个 `ParcelFileDescriptor` 对象
   （文件本体留在自己的 cache 里，宿主读完就关 FD；缓存由你自己清理）。
+
+### `debugInfo` 会被用户看见
+
+宿主插件页底部有一个折叠的「诊断信息」区，里面显示 `debugInfo` 和**最后一条错误的
+`detail`**。所以：
+
+- 往里写**对排查有用**的东西：模型名 / 量化 / 实际步数 / 重采样前后的采样率 / RTF
+- **不要**往里写路径、token、用户文本原文 —— 这块内容用户能长按复制、会贴给别人
+- 出错时 `PluginError.detail` 放堆栈或原生报错原文（宿主只放进诊断区，不当正文显示）
+- `message` 仍然是给用户看的一句话，两者别混
+
+这比只进 logcat 有用得多：普通用户装不了 adb，但他能截图。
 
 ### 流式（可选）
 
@@ -568,6 +652,9 @@ Binder 全进程只有 1 MB 配额。传 `ByteArray` 超过这个量会炸，
 - [ ] 桌面没有图标（只有激活组件，没有 `CATEGORY_LAUNCHER`）
 - [ ] 装到干净设备上，从「启用」走到「试听出声」一次成功
 - [ ] 连续试听两次以上（验证引擎状态机）
+- [ ] **生成中点「停止」能立刻收尾**（插件检查点够密，宿主按钮能复位）
+- [ ] 克隆模式下选一段参考音频能真的出结果（宿主会传 FD，插件要解码到 16 kHz）
+- [ ] 改了「推理线程」后重启插件，确认 `config.threads` 真的用上了
 - [ ] 停用后插件的模型内存确实释放了
 - [ ] 改过 AIDL 的话：SDK 已重发，插件已重编
 - [ ] 判包看 **sha256**，不是字节数（相邻版本字节数可能完全相同）
