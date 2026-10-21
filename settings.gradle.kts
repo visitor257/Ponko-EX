@@ -41,8 +41,9 @@ rootProject.name = "Ponko-EX"
 
 // ---- 模块 ----
 //
-// 主线（main）**故意没有 include**。这不是漏写 ——
-// 测试插件在 Ponko-EX_test 线上，那条线自己 include。
+// 这条分支是 Ponko-EX_test：只有 Echo 测试插件。
+// 主线（main）里这段是空的 —— 切分支时这个文件跟着换，不用手动改。
 //
 // 加一条新插件线时：
 //   include(":plugins:<名字>")
+include(":plugins:echo")

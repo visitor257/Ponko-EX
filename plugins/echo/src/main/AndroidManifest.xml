@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ponko 示例插件（Echo）。
+
+  ⚠ 四个必须项，缺一个就连不上：
+
+  1. Service 必须 exported="true"
+     —— 宿主是**另一个应用**，不导出就 bind 不到。
+
+  2. Service 的 android:permission 用宿主的 signature 权限
+     —— 注意方向：这个属性的含义是「**调用方**必须持有该权限」，
+        所以**宿主**要持有它，插件自己**不需要**声明 uses-permission。
+        （宿主那边已经声明了，见 LiteRT-Chat 的 AndroidManifest。）
+     效果：只有与宿主同签名的 APK 才能 bind，系统层挡住冒充者。
+
+  3. Service 上挂 intent-filter = com.litertchat.ponko.PLUGIN
+     —— 宿主靠这个 action 发现插件。
+
+  4. **必须有一个能启动的 Activity**，否则永远连不上
+     —— 新安装的包处于系统的 **stopped** 状态，此时别的应用 bind 到它的
+        服务会**静默返回 false**（不报错、不抛异常，日志里只有一句
+        "Unable to start service ...: not found"，极难查）。
+        解除方式**只有一个**：包自己的 Activity 被启动一次。
+        广播、startService、pm enable 全都不行（Android 15 起官方更明确：
+        只能由用户的直接或间接操作解除）。
+
+  ⭐ 但「必须有 Activity」≠「必须有桌面图标」。
+
+     本文件里的 EchoActivator 就是这个区别的体现：
+       · 没有 CATEGORY_LAUNCHER  → 桌面**看不到图标**（和系统组件一样）
+       · 继承 PonkoActivatorActivity → 启动时不画任何界面，连闪都没有
+       · 挂自定义 action ACTIVATOR → 宿主仍能发现并启动它
+
+     清 stopped 只要求「某个组件被启动」，不要求那个组件对用户可见。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 插件运行期间要跑前台服务 + 持唤醒锁 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <queries>
+        <package android:name="com.litertchat.app" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_plugin"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+
+        <!--
+          必须项 4：无界面的激活组件。
+
+          作用：让系统把本应用从 stopped 状态放出来，之后宿主才能 bind 到 Service。
+
+          四个属性缺一不可：
+          · exported=true        —— 宿主是别的应用，不导出就启动不到
+          · Theme.NoDisplay      —— 不创建窗口，配合 onCreate 里立刻 finish
+          · excludeFromRecents   —— 不出现在"最近任务"里
+          · noHistory            —— 不进返回栈
+          · taskAffinity=""      —— 不单独占一个任务
+
+          intent-filter 挂的是自定义 action，**不是 MAIN/LAUNCHER** ——
+          所以桌面上看不到图标。
+        -->
+        <activity
+            android:name=".EchoActivator"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="com.litertchat.ponko.ACTIVATOR" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          插件主服务：
+          · exported=true            —— 宿主是另一个应用，必须能 bind
+          · permission=<宿主权限>    —— 只有同签名 APK 才能 bind（约束的是调用方）
+          · intent-filter=PLUGIN     —— 宿主靠这个 action 发现插件
+        -->
+        <service
+            android:name=".EchoPluginService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse"
+            android:permission="com.litertchat.ponko.permission.BIND_PLUGIN">
+            <intent-filter>
+                <action android:name="com.litertchat.ponko.PLUGIN" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs local speech synthesis requested by the Ponko app" />
+        </service>
+    </application>
+
+</manifest>

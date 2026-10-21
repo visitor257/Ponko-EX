@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      应用名。只在「系统设置 → 应用」里能看到 —— 桌面上没有图标。
+      用户在 Ponko 的插件列表里看到的是插件自述的 displayName（见 EchoPluginService）。
+    -->
+    <string name="app_name">Ponko 测试插件 · Echo</string>
+</resources>
