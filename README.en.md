@@ -29,8 +29,14 @@ No server, no API key, no telemetry. It works in airplane mode.
 
 1. Install `Ponko-EX_VoxCPM2_release.apk`
 2. Open Ponko → **Plugins** → enable **VoxCPM2**
-3. Tap **Download weights** on the plugin page (3.55 GB, resumable, **use Wi-Fi**)
-4. Once the status line reads *engine ready*, go back and synthesise
+3. On the plugin page, under **1 · Weights**, tap **Download all weights** (3.55 GB, resumable, **use Wi-Fi**)
+4. Tap **Load engine** at the top of the page (3.5 GB takes roughly 10–30 s); once the status reads *ready*, preview it
+
+> Loading is **a tap you make yourself**. Since 2.0.0 the host no longer loads every
+> plugin's engine on connect — only lightweight plugins that declare `AUTOLOAD_ENGINE`
+> are loaded automatically. This one needs 3.5 GB, so it deliberately does not declare it.
+> Tapping **Preview** works too (it loads first, then synthesises), you just don't get a
+> load-progress view. Tap **Unload engine** whenever you want the memory back.
 
 > **The signature must match the host.** Ponko protects plugin binding with a
 > `signature`-level permission, so a mismatched key makes `bindService` throw
@@ -47,7 +53,7 @@ reach `SynthesisRequest`:
 
 | Parameter | Notes |
 |---|---|
-| Text | Capped at 40 characters. Phone RTF is 10–30, so 40 characters already means minutes |
+| Text | No hard character cap (the plugin never truncates). Phone RTF is 10–30, so 40 characters already means minutes |
 | Mode | plain / clone / continuation |
 | Reference audio | Picked from a file; the host opens it and passes an FD, the plugin decodes and resamples to 16 kHz |
 | Transcript | Required for continuation only |
@@ -69,8 +75,9 @@ so the plugin exposes them in its own UI:
 | Diffusion steps | 10 | 4–24 | More is finer, and linearly slower |
 | Voice design description | empty | — | Equivalent to the host's `voiceDescription`; if both are empty no prefix is added |
 
-The page also shows three status lines (engine / weights / disk), a download-source
-choice, and download / cancel / delete actions.
+The page is ordered the way you use it: a **run status** block at the top (engine /
+weights / storage / device / last synthesis / notices), then **1 · Weights** and
+**2 · Synthesis parameters**, and a collapsible log (latest 24 lines + clear).
 
 ## The three modes
 
@@ -152,7 +159,8 @@ To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxC
 - **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
 - **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
 - **One download source** — ModelScope only, no hf-mirror fallback
-- **The 40-character cap is the host's** — the plugin does not truncate, but you cannot type more
+- **Long text is slow** — there is no hard character cap (the plugin never truncates), but
+  phone RTF is 10–30, so 40 characters is already minutes
 - **Cancellation is not instantaneous** — the native side checks between audio chunks; if it
   is stuck in LLM prefill, expect a few seconds
 - **Results stay in the plugin cache** — `cache/synth/`, only the last three are kept. Use
