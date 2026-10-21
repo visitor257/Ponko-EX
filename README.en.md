@@ -1,7 +1,7 @@
 # Ponko-EX · VoxCPM2
 
 A speech-synthesis plugin for [Ponko](https://github.com/visitor257/Ponko):
-[VoxCPM2](https://github.com/OpenBMB/VoxCPM) (OpenBMB, 2B) running **offline** on the phone.
+[VoxCPM2](https://modelscope.cn/models/OpenBMB/VoxCPM2) (OpenBMB, 2B) running **offline** on the phone.
 
 [中文](README.md)
 
@@ -12,7 +12,7 @@ No server, no API key, no telemetry. It works in airplane mode.
 |---|---|
 | Host | Ponko **2.0.0** or newer (the `LiteRT-Chat` main line) |
 | Platform | Android 9+ (minSdk 28) · **arm64-v8a only** |
-| Engine | llama.cpp-omni's `voxcpm2_runtime` plus a hand-written JNI (statically linked, 5.6 MB) |
+| Engine | llama.cpp-omni's `voxcpm2_runtime` plus a hand-written JNI (statically linked, 5.8 MB) |
 | Licence | Code MIT · VoxCPM2 weights Apache-2.0 (see [NOTICE.md](plugins/voxcpm2/NOTICE.md)) |
 
 ## What it does

@@ -1,7 +1,7 @@
 # Ponko-EX · VoxCPM2
 
 给 [Ponko](https://github.com/visitor257/Ponko) 用的语音合成插件：
-把 [VoxCPM2](https://github.com/OpenBMB/VoxCPM)（OpenBMB，2B）放进手机里**离线**跑。
+把 [VoxCPM2](https://modelscope.cn/models/OpenBMB/VoxCPM2)（OpenBMB，2B）放进手机里**离线**跑。
 
 [English](README.en.md)
 
@@ -12,7 +12,7 @@
 |---|---|
 | 宿主 | Ponko **2.0.0** 及以上（主线 `LiteRT-Chat`） |
 | 平台 | Android 9+（minSdk 28）· **arm64-v8a only** |
-| 内核 | llama.cpp-omni 的 `voxcpm2_runtime` + 自写 JNI（静态链接，5.6 MB） |
+| 内核 | llama.cpp-omni 的 `voxcpm2_runtime` + 自写 JNI（静态链接，5.8 MB） |
 | 许可 | 代码 MIT · VoxCPM2 权重 Apache-2.0（见 [NOTICE.md](plugins/voxcpm2/NOTICE.md)） |
 
 ## 能做什么
