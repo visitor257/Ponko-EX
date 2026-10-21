@@ -40,6 +40,7 @@ Ponko-EX/
 ├── build.gradle.kts                KGP 版本必须与宿主一致
 ├── gradle.properties
 ├── tools/build.bat                 纯 ASCII；载入 MSVC 环境后**就地构建**
+├── tools/push-via-api.py           git push 不通时用 REST API 推送
 └── plugins/                        只在 Ponko-EX_test 线上存在
     └── echo/
 ```

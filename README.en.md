@@ -43,6 +43,7 @@ Ponko-EX/
 ├── build.gradle.kts                KGP version must match the host
 ├── gradle.properties
 ├── tools/build.bat                 pure ASCII; loads the MSVC env, then builds in place
+├── tools/push-via-api.py           push over the REST API when git push is blocked
 └── plugins/                        present only on the Ponko-EX_test branch
     └── echo/
 ```
