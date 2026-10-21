@@ -4,6 +4,7 @@ package com.litertchat.plugin.echo
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
+import com.litertchat.plugin.ActionLabel
 import com.litertchat.plugin.Capability
 import com.litertchat.plugin.EngineConfig
 import com.litertchat.plugin.EngineInfo
@@ -183,6 +184,21 @@ class EchoPluginService : PonkoPluginService() {
             "note" -> note = value
         }
     }
+
+    /**
+     * 宿主按钮的文案。
+     *
+     * 这里**只改两个**，剩下的故意不写 —— 用来验证两件事同时成立：
+     * 覆盖过的用插件的字，没覆盖的仍然用宿主默认。
+     *
+     * Echo 之所以这么改：它没有模型，说「试听」像是在试一段真语音，
+     * 说「跑一次测试」才符合它实际干的事（生成一段琶音验证链路）。
+     * 真模型插件通常不需要改这些 —— 宿主的默认文案就是为它们写的。
+     */
+    override fun buildActionLabels(): Map<String, String> = mapOf(
+        ActionLabel.PREVIEW to "跑一次测试",
+        ActionLabel.PREVIEW_AGAIN to "再跑一次",
+    )
 
     /** 用户点了某个 ACTION 项。这里模拟一次下载，验证进度条 + 重画 */
     override fun onActionInvoked(key: String) {
