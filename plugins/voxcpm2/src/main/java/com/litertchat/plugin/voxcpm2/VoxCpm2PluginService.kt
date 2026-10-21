@@ -24,6 +24,9 @@ import com.litertchat.plugin.UiSchema
 import com.litertchat.plugin.UiType
 import java.io.File
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
@@ -67,7 +70,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     private fun notifyThrottled() {
         val now = SystemClock.elapsedRealtime()
-        if (now - lastNotifyAt < 700) return
+        // 1 秒一次：这一页有三十来个控件，重画是**整页重建**，再密就不值得了
+        if (now - lastNotifyAt < 1_000) return
         lastNotifyAt = now
         notifySchemaChanged()
     }
@@ -78,6 +82,59 @@ class VoxCpm2PluginService : PonkoPluginService() {
     @Volatile private var timesteps = 10
     @Volatile private var voiceDesign = ""
 
+    /** 数字输入框的校验回显：输入非法时告诉用户"保留了什么"，而不是默默吞掉 */
+    @Volatile private var cfgHint = ""
+    @Volatile private var stepsHint = ""
+
+    // ---- 设备信息：**不能在 buildSettingsSchema() 里现取** ----
+    //
+    // getMemoryInfo() 是一次到 system_server 的 Binder 调用，而 buildSettingsSchema()
+    // 跑在宿主的 Binder 线程上。在那儿做 IPC 会把宿主的 16 个 Binder 线程占一个，
+    // 所以这里缓存，只在 onCreate / 加载完 / 下载完 / 合成完这些**自己线程**的时机刷新。
+    @Volatile private var devCores = Runtime.getRuntime().availableProcessors()
+    @Volatile private var devMemTotal = 0L
+    @Volatile private var devMemAvail = 0L
+    @Volatile private var devAbi = ""
+
+    // ---- 上次合成结果（给「上次」状态行用）----
+    @Volatile private var lastAudioSec = 0.0
+    @Volatile private var lastGenMs = 0L
+    @Volatile private var lastRtf = 0.0
+    @Volatile private var lastMode = -1
+
+    // ---- 界面日志 ----
+    //
+    // 宿主没有"流式日志"控件（只有一次性 INFO），所以这里自己攒一小段环形缓冲，
+    // 每次重画时快照最后 N 行。用户装不了 adb，这一块就是他能拿到的全部现场。
+    private val logLines = ArrayDeque<String>()
+    private val logLock = Any()
+
+    /** 写一行界面日志。**不触发重画** —— 重画由调用方在粗粒度节点自己决定 */
+    private fun logLine(msg: String) {
+        // 不用 String.format("%tH")：Kotlin 会把 $tH 当成字符串模板
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        synchronized(logLock) {
+            logLines.addLast("$ts  $msg")
+            while (logLines.size > LOG_KEEP) logLines.removeFirst()
+        }
+        Log.i(TAG, msg)
+    }
+
+    private fun logSnapshot(): String = synchronized(logLock) {
+        if (logLines.isEmpty()) "" else logLines.toList().takeLast(LOG_SHOW).joinToString("\n")
+    }
+
+    private fun refreshDeviceStats() {
+        devCores = Runtime.getRuntime().availableProcessors()
+        devAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: ""
+        runCatching {
+            val am = getSystemService(ActivityManager::class.java)
+            val mi = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            devMemTotal = mi.totalMem
+            devMemAvail = mi.availMem
+        }
+    }
+
     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     override fun onCreate() {
@@ -85,10 +142,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 这里读一次就够：之后所有地方都读缓存字段（同步方法不能做 IO）
         prefs.let {
             sourceKey = it.getString(KEY_SOURCE, sourceKey) ?: sourceKey
-            cfg = it.getFloat(KEY_CFG, cfg).coerceIn(0.5f, 4.0f)
+            cfg = it.getFloat(KEY_CFG, cfg).coerceIn(1f, 4f)
             timesteps = it.getInt(KEY_STEPS, timesteps).coerceIn(4, 32)
             voiceDesign = it.getString(KEY_VOICE, "") ?: ""
         }
+        refreshDeviceStats()
+        logLine("插件进程启动 · $devCores 核 · 内存 ${gb(devMemAvail)}/${gb(devMemTotal)} 可用")
     }
 
     // ======================================================== 清单
@@ -96,7 +155,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.1.0",
+        versionName = "0.2.0",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -112,10 +171,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val t0 = SystemClock.elapsedRealtime()
 
         val chosen = pickUsableSource()
-            ?: throw PluginException.modelInvalid(
-                "权重还没下载。请先在插件界面点「下载权重」（约 3.5 GB），" +
-                    "或在设置里换成精简源（约 2.8 GB）。"
-            )
+            ?: run {
+                logLine("加载中止：两套权重都不完整")
+                throw PluginException.modelInvalid(
+                    "权重还没下载。请先在插件界面点「下载权重」（约 3.5 GB），" +
+                        "或在设置里换成精简源（约 2.8 GB）。"
+                )
+            }
 
         if (VoxCpm2Bridge.nativeIsReady()) {
             // 已经加载过（幂等）：不重复 init，直接回报
@@ -128,6 +190,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val mi = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
         val limit = if (config.maxMemoryBytes > 0) min(config.maxMemoryBytes, mi.availMem) else mi.availMem
         if (limit < need) {
+            logLine("内存不足：可用 ${ModelStore.human(mi.availMem)}，需要 ${ModelStore.human(need)}")
             throw PluginException.outOfMemory(
                 "可用内存 ${ModelStore.human(mi.availMem)}，加载需要约 ${ModelStore.human(need)}。" +
                     "先关掉其它应用，或换成精简源。"
@@ -146,9 +209,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
             threads,
         )
         if (rc != 0) {
-            throw PluginException.modelInvalid(
-                "加载失败：${VoxCpm2Bridge.nativeLastError().ifBlank { "未知原因" }}"
-            )
+            val err = VoxCpm2Bridge.nativeLastError().ifBlank { "未知原因" }
+            logLine("加载失败：$err（${chosen.key} / $threads 线程）")
+            throw PluginException.modelInvalid("加载失败：$err")
         }
 
         sampleRate = VoxCpm2Bridge.nativeSampleRate().takeIf { it > 0 } ?: 48_000
@@ -157,7 +220,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
         loadedThreads = threads
         nativeReady = true
 
-        Log.i(TAG, "引擎就绪：${chosen.key} / ${ModelStore.human(loadedBytes)} / ${threads} 线程 / $sampleRate Hz")
+        refreshDeviceStats()
+        logLine(
+            "引擎就绪：${chosen.key} · ${ModelStore.human(loadedBytes)} · $threads 线程 · " +
+                "${sampleRate / 1000} kHz · 加载 ${SystemClock.elapsedRealtime() - t0} ms"
+        )
+        // 「引擎」那行立刻从"未加载"变成"已就绪"，不然用户点完试听还得退出再进来
+        notifySchemaChanged()
         return EngineInfo(
             sampleRate = sampleRate,
             channelCount = 1,
@@ -168,11 +237,16 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     override fun closeEngineBlocking() {
         // 幂等：宿主停用插件、页面销毁、进程回收都会调
+        val wasReady = nativeReady
         runCatching { VoxCpm2Bridge.nativeFree() }
             .onFailure { Log.w(TAG, "nativeFree 失败", it) }
         nativeReady = false
         loadedBytes = 0L
         loadedSourceKey = ""
+        if (wasReady) {
+            refreshDeviceStats()
+            logLine("引擎已释放 · 内存回到 ${gb(devMemAvail)} 可用")
+        }
     }
 
     /** 选一套可用权重：优先用户在界面里选的那套，不行就退到另一套 */
@@ -246,6 +320,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 raw.delete()
                 throw PluginException.invalidRequest("参考音频是空文件")
             }
+            logLine("参考音频 ${ModelStore.human(copied)} 已复制到缓存")
 
             out.stage(Stage.LOADING, "解码参考音频")
             val wav = File(cache, "ref_${System.currentTimeMillis()}.wav")
@@ -253,6 +328,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             raw.delete()
             if (!ok) {
                 wav.delete()
+                logLine("参考音频解码失败")
                 throw PluginException.invalidRequest(
                     "参考音频解码失败。换一段 5~10 秒、能正常播放的音频试试。"
                 )
@@ -274,6 +350,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val seed = if (req.seed != 0) req.seed else (System.nanoTime() and 0x7fffffff).toInt()
         val useCfg = if (req.cfg > 0f) req.cfg else cfg
         val useSteps = if (req.timesteps > 0) req.timesteps else timesteps
+
+        lastMode = mode
+        logLine(
+            "开始合成：${rawText.length} 字 · mode=$mode · cfg=$useCfg · steps=$useSteps · " +
+                "seed=$seed" + if (design.isNotEmpty()) " · 有音色描述" else ""
+        )
 
         // 进度轮询：原生侧是阻塞调用，没有回调，只能这样量
         val finished = AtomicBoolean(false)
@@ -314,11 +396,19 @@ class VoxCpm2PluginService : PonkoPluginService() {
         }
         val genMs = SystemClock.elapsedRealtime() - tGen
 
-        if (out.isCancelled) throw PluginException(ErrCode.CANCELLED, "已取消")
+        if (out.isCancelled) {
+            logLine("已取消（生成 ${genMs} ms）")
+            // 宿主在结果/错误回调里**不会**重画插件页（只更新功能区的提示），
+            // 所以这一页的内容要自己喊一声，否则日志会停在"开始合成"。
+            notifySchemaChanged()
+            throw PluginException(ErrCode.CANCELLED, "已取消")
+        }
 
         if (!ok || !outFile.isFile || outFile.length() <= 44) {
             val nativeErr = VoxCpm2Bridge.nativeLastError()
             Log.e(TAG, "生成失败：$nativeErr")
+            logLine("生成失败：${nativeErr.ifBlank { "引擎没有产出音频" }}")
+            notifySchemaChanged()
             throw PluginException(
                 ErrCode.PLUGIN_INTERNAL,
                 "生成失败：${nativeErr.ifBlank { "引擎没有产出音频" }}",
@@ -328,6 +418,19 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         out.stage(Stage.AUDIO_DECODE, "封装 WAV")
         val seconds = AudioUtil.wavDurationSeconds(outFile)
+
+        // 记住这一次，界面上的「上次」状态行直接读它（不用再算）
+        lastAudioSec = seconds
+        lastGenMs = genMs
+        lastRtf = if (seconds > 0.05) genMs / 1000.0 / seconds else 0.0
+        lastMode = mode
+        refreshDeviceStats()
+        logLine(
+            "完成：${"%.1f".format(seconds)} s 音频 / ${genMs} ms / " +
+                "RTF ${"%.1f".format(lastRtf)} · 模式 $mode"
+        )
+        // 让"上次合成"状态行和日志立刻出现，不用等用户退出再进来
+        notifySchemaChanged()
 
         // 清掉旧产物，只留最近 3 个 —— 插件缓存没人替我们清
         runCatching {
@@ -359,53 +462,97 @@ class VoxCpm2PluginService : PonkoPluginService() {
     // ======================================================== 界面
 
     /**
-     * 宿主渲染的设置页。
+     * 宿主渲染的插件页。
      *
-     * ⚠ 这个方法跑在**宿主的 Binder 线程**上，必须快。这里只做几次 `File.length()`，
-     * 没有网络、没有解码、不加锁。
+     * 和独立的测试 App 取向不同：那一版是"操作台"，把所有旋钮摊在一屏；
+     * 这一版是"状态 + 缺什么补什么"—— 真正的操作（文本、模式、参考音频、试听）
+     * 由宿主在页面顶部的「功能」区提供，插件不重复摆一遍。
+     *
+     * 分区顺序按**使用顺序**排，不按重要性：
+     * 运行状态（能不能用）→ 1 权重（能不能开始）→ 2 参数（开始前调什么）→ 说明 → 日志。
+     *
+     * ⚠ 这个方法跑在**宿主的 Binder 线程**上，必须快：只读 volatile 缓存 +
+     * 几次 `File.length()`。没有网络、没有解码、不调用系统服务
+     * （内存信息在 [refreshDeviceStats] 里提前取好）。
      */
     override fun buildSettingsSchema(): UiSchema {
         val src = ModelStore.sourceAt(ModelStore.sourceIndex(sourceKey))
         val ready = ModelStore.isSourceReady(this, src)
         val installed = ModelStore.installedBytes(this)
-        val freeGb = ModelStore.usableSpace(this) / 1e9
 
         val items = mutableListOf<UiItem>()
 
-        // ---- 只读状态 ----
+        // ==================== 运行状态（只读，一眼判断能不能用）====================
+        items += UiItem(key = "sec_state", type = UiType.SECTION, label = "运行状态")
         items += UiItem(
             key = "st_engine", type = UiType.STATUS, label = "引擎",
-            value = if (nativeReady) "已就绪 · ${sampleRate / 1000} kHz" else "未加载",
+            value = if (nativeReady) "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程" else "未加载",
         )
         items += UiItem(
             key = "st_weights", type = UiType.STATUS, label = "权重",
-            value = if (installed > 0) "已下载 ${ModelStore.human(installed)}" else "未下载",
+            value = when {
+                ready -> "已就绪 · ${ModelStore.human(src.totalBytes)}"
+                installed > 0 -> "不完整 · 已有 ${ModelStore.human(installed)}"
+                else -> "未下载"
+            },
         )
         items += UiItem(
-            key = "st_disk", type = UiType.STATUS, label = "可用空间",
-            value = String.format("%.1f GB", freeGb),
+            key = "st_disk", type = UiType.STATUS, label = "存储",
+            value = "剩 ${ModelStore.human(ModelStore.usableSpace(this))} / 需 ${ModelStore.human(src.totalBytes)}",
         )
+        items += UiItem(
+            key = "st_device", type = UiType.STATUS, label = "设备",
+            value = "$devCores 核 · ${devAbi.ifBlank { "未知 ABI" }} · ${gb(devMemAvail)}",
+        )
+        if (lastAudioSec > 0.0) {
+            items += UiItem(
+                key = "st_last", type = UiType.STATUS, label = "上次合成",
+                value = "${modeName(lastMode)} · ${"%.1f".format(lastAudioSec)}s / " +
+                    "${lastGenMs / 1000}s · RTF ${"%.1f".format(lastRtf)}",
+            )
+        }
         if (dlNotice.isNotEmpty()) {
             items += UiItem(key = "st_notice", type = UiType.STATUS, label = "提示", value = dlNotice)
         }
 
-        // ---- 下载 ----
-        items += UiItem(key = "g_dl", type = UiType.GROUP_START, label = "权重")
+        // ==================== 1 · 权重 ====================
+        items += UiItem(key = "sec_w", type = UiType.SECTION, label = "1 · 权重")
 
         items += UiItem(
             key = "source", type = UiType.CHOICE, label = "下载源",
-            help = if (ready) "当前源已就绪" else src.note,
+            help = if (ready) "当前源已就绪，可以直接试听" else src.note,
             value = src.key,
-            options = ModelStore.SOURCES.map { UiOption(it.key, it.label) },
+            options = ModelStore.SOURCES.map {
+                UiOption(it.key, "${ModelStore.human(it.totalBytes)} · ${sourceShort(it.key)}")
+            },
             enabled = !downloading,
         )
 
-        items += UiItem(
-            key = "dl_progress", type = UiType.PROGRESS, label = "下载进度",
-            help = if (downloading) dlDetail
-            else "${ModelStore.human(src.totalBytes)} · 支持断点续传，中断了再点一次接着下",
-            value = "%.1f".format(if (downloading) dlPercent else if (ready) 100.0 else 0.0),
-        )
+        // 逐文件状态。独立版里这块最有用：能分清"压根没下"和"下到一半断了"
+        src.files().forEach { spec ->
+            val f = ModelStore.fileFor(this, spec)
+            val part = File(f.absolutePath + ".part")
+            val state = when {
+                ModelStore.isReady(this, spec) -> "已就绪 · ${ModelStore.human(spec.bytes)}"
+                part.isFile -> "断点 · ${ModelStore.human(part.length())} / ${ModelStore.human(spec.bytes)}"
+                f.isFile -> "不完整 · ${ModelStore.human(f.length())}"
+                else -> "未下载 · ${ModelStore.human(spec.bytes)}"
+            }
+            items += UiItem(
+                key = "file_${spec.fileName}", type = UiType.STATUS,
+                label = spec.label, value = state,
+            )
+        }
+
+        // 没下过也没在下的时候不摆一条 0% 的空进度条
+        if (downloading || installed > 0) {
+            items += UiItem(
+                key = "dl_progress", type = UiType.PROGRESS, label = "下载进度",
+                help = if (downloading && dlDetail.isNotEmpty()) dlDetail
+                else "支持断点续传：中断后再点一次会从断点接着下",
+                value = "%.1f".format(if (downloading) dlPercent else if (ready) 100.0 else 0.0),
+            )
+        }
 
         items += UiItem(
             key = "dl_start", type = UiType.ACTION,
@@ -413,70 +560,133 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 downloading -> "下载中…"
                 ready -> "重新下载（覆盖现有文件）"
                 installed > 0 -> "继续下载"
-                else -> "下载权重"
+                else -> "下载全部权重"
             },
-            help = "从魔搭下载，单个文件最大 1.7 GB",
-            enabled = !downloading, primary = !ready,
+            help = if (downloading) "下载在独立线程里跑，可以退出这一页，回来还在下"
+            else "共 ${ModelStore.human(src.totalBytes)}；只连所选源，不下多余文件",
+            enabled = !downloading,
+            primary = !ready,
         )
-
         if (downloading) {
             items += UiItem(key = "dl_cancel", type = UiType.ACTION, label = "取消下载")
         }
-
-        if (installed > 0) {
+        if (installed > 0 && !downloading) {
             items += UiItem(
                 key = "dl_delete", type = UiType.ACTION, label = "删除已下载权重",
-                help = "会释放 ${ModelStore.human(installed)}；正在使用引擎时请先在卡片上停用插件",
-                enabled = !downloading,
+                help = "释放 ${ModelStore.human(installed)}。引擎正在用时删不掉，先在卡片上停用插件",
             )
         }
 
-        items += UiItem(key = "g_dl_end", type = UiType.GROUP_END)
+        items += UiItem(
+            key = "src_note", type = UiType.INFO,
+            label = "权重不进 APK，下到插件自己的私有目录，卸载插件时一起删掉。\n" +
+                "标准源仓库声明 apache-2.0；精简源是第三方 GGUF 转换件、仓库没填许可（上游权重仍是 " +
+                "apache-2.0）—— 介意许可就留在标准源。",
+        )
 
-        // ---- 默认参数 ----
-        items += UiItem(key = "g_param", type = UiType.GROUP_START, label = "默认参数")
+        // ==================== 2 · 合成参数 ====================
+        items += UiItem(key = "sec_p", type = UiType.SECTION, label = "2 · 合成参数")
+        items += UiItem(
+            key = "param_intro", type = UiType.INFO,
+            label = "这一组只是默认值。要合成的文本、合成模式、参考音频、随机种子在页面顶部的「功能」区，" +
+                "由 Ponko 提供 —— 那边填了就用那边的，没填才回落到这里。",
+        )
 
         items += UiItem(
-            key = "voice", type = UiType.TEXTAREA, label = "语音设计描述",
-            help = "只在宿主没给描述时生效。写在这里的内容会被拼成 \"(描述)正文\"，" +
-                "相当于凭空造一个音色；留空则用模型默认音色",
+            key = "voice", type = UiType.TEXTAREA, label = "语音设计描述（默认）",
+            help = "只在上面没填描述时生效。会拼成「(描述)正文」，相当于凭空造一个音色；留空用模型自带音色",
             value = voiceDesign,
         )
-
         items += UiItem(
-            key = "cfg", type = UiType.SLIDER, label = "CFG 引导强度",
-            help = "越大越贴文本、越小越自由。2.0 是官方建议值",
-            value = "%.1f".format(cfg), min = 1.0, max = 4.0, step = 0.1,
+            key = "cfg", type = UiType.TEXT, label = "CFG 引导强度",
+            help = cfgHint.ifEmpty { "1.0 ~ 4.0，官方建议 2.0。越大越贴文本、越小越自由" },
+            value = trimNum(cfg.toDouble()),
         )
-
         items += UiItem(
-            key = "steps", type = UiType.SLIDER, label = "扩散步数",
-            help = "10 起步；15~20 更细腻但更慢（本来就很慢了，不建议调高）",
-            value = timesteps.toString(), min = 4.0, max = 24.0, step = 1.0,
+            key = "steps", type = UiType.TEXT, label = "扩散步数",
+            help = stepsHint.ifEmpty { "4 ~ 24 的整数，10 起步；调高更细腻，但也更慢" },
+            value = timesteps.toString(),
         )
+        if (nativeReady) {
+            items += UiItem(
+                key = "st_effective", type = UiType.STATUS, label = "将使用",
+                help = "功能区那边填了 cfg / 步数时以那边为准，这里只是回落值",
+                value = "cfg ${trimNum(cfg.toDouble())} · steps $timesteps · $loadedThreads 线程",
+            )
+        }
 
-        items += UiItem(key = "g_param_end", type = UiType.GROUP_END)
-
-        // ---- 说明与许可 ----
-        items += UiItem(key = "sep_help", type = UiType.SECTION, label = "说明")
+        // ==================== 说明 ====================
+        items += UiItem(key = "sec_doc", type = UiType.SECTION, label = "说明")
         items += UiItem(
             key = "help", type = UiType.INFO,
-            label = "首次使用要先下载权重（约 3.5 GB）。下载完成后引擎会在下次启用或试听时加载。\n\n" +
-                "**手机纯 CPU 推理，非常慢**：5 秒语音大约要等 1~2 分钟，生成过程中会有进度，随时可以取消。" +
-                "建议 8 GB 内存以上的机型。\n\n" +
-                "参考音频要求 5~10 秒、干净的单一说话人；任意格式都可以，插件会自己解码并转成 16 kHz 单声道。",
+            label = "参考音频要 5~10 秒、单一说话人、尽量干净；任意格式都行，插件自己解码成 16 kHz " +
+                "单声道，超过 64 MB 会拒绝。\n\n" +
+                "三种模式：普通合成（可在文本前用括号写音色描述）、声音克隆（只给参考音频）、" +
+                "极致克隆（参考音频 + 逐字稿，最像）。\n\n" +
+                "首次加载引擎约 10~30 秒，之后一直留着；在卡片上停用插件才会释放。",
         )
         items += UiItem(
             key = "license", type = UiType.INFO,
-            label = "**许可**：本插件 MIT。推理引擎 llama.cpp-omni / ggml 为 MIT，" +
-                "版权归 The ggml authors；模型 VoxCPM2 为 Apache-2.0，版权归 OpenBMB。" +
-                "权重由你在此处自行下载，不随插件分发。\n\n" +
-                "**声音使用**：用他人音频做音色克隆可能侵犯声音权益（《民法典》第 1023 条），" +
+            label = "许可：本插件 MIT。推理引擎 llama.cpp-omni / ggml 为 MIT，版权归 The ggml " +
+                "authors；模型 VoxCPM2 为 Apache-2.0，版权归 OpenBMB。权重由你自行下载，不随插件分发。\n\n" +
+                "声音使用：用他人音频做音色克隆可能侵犯声音权益（《民法典》第 1023 条），" +
                 "请只克隆自己或已获授权的音色；对外发布合成音频还需按深度合成相关规定做标识。",
         )
 
-        return UiSchema(intro = INTRO, items = items)
+        // ==================== 日志 ====================
+        val logs = logSnapshot()
+        items += UiItem(key = "g_log", type = UiType.GROUP_START, label = "日志")
+        items += UiItem(
+            key = "log_body", type = UiType.INFO,
+            label = if (logs.isEmpty()) "（暂无日志）" else logs,
+        )
+        items += UiItem(
+            key = "log_clear", type = UiType.ACTION, label = "清空日志",
+            help = "只清这一页的记录，不影响 logcat：adb logcat -s VoxCpm2Plugin",
+            enabled = logs.isNotEmpty(),
+        )
+        items += UiItem(key = "g_log_end", type = UiType.GROUP_END)
+
+        return UiSchema(intro = buildIntro(ready, installed), items = items)
     }
+
+    /**
+     * 页面顶部那段。
+     *
+     * 不只写自我介绍 —— 第一句永远是「**现在该干什么**」。
+     * 插件页比独立 App 少一大块操作区，用户进来最容易迷路的就是"下一步"。
+     */
+    private fun buildIntro(ready: Boolean, installed: Long): String {
+        val next = when {
+            downloading -> "正在下载权重（${"%.0f".format(dlPercent)}%），下完就能合成。"
+            ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「试听」。"
+            ready -> "权重已就绪。点上面「试听」会自动加载引擎（约 10~30 秒）。"
+            installed > 0 -> "权重还没下完（已有 ${ModelStore.human(installed)}）。" +
+                "到下面「1 · 权重」点「继续下载」。"
+            else -> "还没下载权重。到下面「1 · 权重」下载（约 3.5 GB），下完才能合成。"
+        }
+        return "VoxCPM2（OpenBMB，2B）本地语音合成：30 种语言、9 种中文方言，" +
+            "音色设计与零样本克隆，48 kHz，除下载权重外全程离线。\n\n$next"
+    }
+
+    private fun sourceShort(key: String): String = when (key) {
+        "licensed" -> "标准源 Q8_0"
+        "compact" -> "精简源 Q4_K_M"
+        else -> key
+    }
+
+    private fun modeName(m: Int): String = when (m) {
+        0 -> "普通合成"
+        1 -> "声音克隆"
+        2 -> "极致克隆"
+        else -> "—"
+    }
+
+    /** 去掉末尾多余的 0：「2.00」→「2」，「0.70」→「0.7」 */
+    private fun trimNum(v: Double): String =
+        "%.2f".format(v).trimEnd('0').trimEnd('.').ifEmpty { "0" }
+
+    private fun gb(bytes: Long): String = String.format("%.1f GB", bytes / 1e9)
 
     override fun onSettingChanged(key: String, value: String) {
         when (key) {
@@ -484,6 +694,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 sourceKey = value
                 prefs.edit().putString(KEY_SOURCE, value).apply()
                 dlNotice = ""
+                logLine("切换下载源：$value")
                 notifySchemaChanged()
             }
             "voice" -> {
@@ -491,12 +702,33 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 prefs.edit().putString(KEY_VOICE, value).apply()
             }
             "cfg" -> {
-                cfg = value.toFloatOrNull()?.coerceIn(1f, 4f) ?: cfg
-                prefs.edit().putFloat(KEY_CFG, cfg).apply()
+                // 数字输入框：宿主只在失焦时把原文送过来，所以校验和回显全在这里做。
+                // 非法输入**不改值**，但要在 help 里说清楚"保留了原来那个"，不能默默吞掉。
+                val raw = value.trim()
+                val v = raw.toFloatOrNull()
+                if (v == null || v < 1f || v > 4f) {
+                    cfgHint = if (raw.isEmpty()) "不能为空，保留 ${trimNum(cfg.toDouble())}"
+                    else "「${raw.take(8)}」不是 1.0~4.0 的数，保留 ${trimNum(cfg.toDouble())}"
+                } else {
+                    // 只留两位小数：界面上的值和真正用的值必须是同一个，否则显示 2.33 实际跑 2.3333
+                    cfg = Math.round(v * 100f) / 100f
+                    cfgHint = ""
+                    prefs.edit().putFloat(KEY_CFG, cfg).apply()
+                }
+                notifySchemaChanged()
             }
             "steps" -> {
-                timesteps = value.toIntOrNull()?.coerceIn(4, 24) ?: timesteps
-                prefs.edit().putInt(KEY_STEPS, timesteps).apply()
+                val raw = value.trim()
+                val v = raw.toIntOrNull()
+                if (v == null || v < 4 || v > 24) {
+                    stepsHint = if (raw.isEmpty()) "不能为空，保留 $timesteps"
+                    else "「${raw.take(8)}」不是 4~24 的整数，保留 $timesteps"
+                } else {
+                    timesteps = v
+                    stepsHint = ""
+                    prefs.edit().putInt(KEY_STEPS, timesteps).apply()
+                }
+                notifySchemaChanged()
             }
         }
     }
@@ -507,16 +739,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
             "dl_cancel" -> {
                 dlCancel.set(true)
                 dlNotice = "正在取消…"
+                logLine("用户点取消下载")
                 notifySchemaChanged()
             }
             "dl_delete" -> {
                 if (nativeReady) {
                     dlNotice = "引擎正在使用权重，请先在插件卡片上停用，再回来删除"
+                    logLine("删除被拒：引擎正在使用权重")
                 } else {
                     val freed = ModelStore.deleteAll(this)
                     dlNotice = "已删除权重，释放 ${ModelStore.human(freed)}"
                     dlPercent = 0.0
+                    logLine("已删除权重，释放 ${ModelStore.human(freed)}")
                 }
+                notifySchemaChanged()
+            }
+            "log_clear" -> {
+                synchronized(logLock) { logLines.clear() }
                 notifySchemaChanged()
             }
         }
@@ -536,6 +775,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val free = ModelStore.usableSpace(this)
         if (free < need + 256L * 1024 * 1024) {
             dlNotice = "空间不够：需要 ${ModelStore.human(need)}，只剩 ${ModelStore.human(free)}"
+            logLine("下载中止：$dlNotice")
             notifySchemaChanged()
             return
         }
@@ -545,11 +785,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
         dlPercent = 0.0
         dlDetail = "准备中…"
         dlNotice = ""
+        logLine("开始下载 ${src.key} · ${ModelStore.human(src.totalBytes)}")
         notifySchemaChanged()
 
         val t = Thread({
             var failed: String? = null
             var done = 0L
+            var loggedPct = 0.0
             try {
                 for (spec in src.files()) {
                     if (dlCancel.get()) break
@@ -559,6 +801,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
                         dlPercent = overall.coerceIn(0.0, 100.0)
                         dlDetail = "${spec.label}：${ModelStore.human(got)} / ${ModelStore.human(total)}" +
                             "（总进度 ${"%.0f".format(overall)}%）"
+                        // 日志每 10% 记一行 —— 界面重画是整页重建，跟着每 400ms 的进度刷不划算
+                        if (overall - loggedPct >= 10.0) {
+                            loggedPct = overall
+                            logLine("下载 ${"%.0f".format(overall)}% · ${spec.label} " +
+                                "${ModelStore.human(got)}/${ModelStore.human(total)}")
+                        }
                         notifyThrottled()
                     }
                     if (r.isFailure) {
@@ -579,7 +827,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
                         "返回上一页再进来，或直接点试听，引擎会自动加载。"
                     else -> "下载中断，再点一次「继续下载」可以接着下"
                 }
-                Log.i(TAG, "下载结束：$dlNotice")
+                refreshDeviceStats()
+                logLine("下载结束：$dlNotice")
                 notifySchemaChanged()
             }
         }, "voxcpm2-download").apply { isDaemon = true; start() }
@@ -602,9 +851,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
         /** 参考音频上限：只要 5~10 秒，给足余地但不让用户把几百 MB 的音频塞进来 */
         private const val MAX_REFERENCE_BYTES = 64L * 1024 * 1024
 
-        private const val INTRO =
-            "**VoxCPM2**（OpenBMB，2B）本地语音合成：30 种语言、9 种中文方言，" +
-                "支持音色设计与零样本克隆，48 kHz 输出。\n\n" +
-                "全部在本机运行，不联网（除了下载权重那一次）。"
+        /** 内存里最多留多少行日志（再多也就是滚动噪声） */
+        private const val LOG_KEEP = 120
+
+        /** 界面上一屏最多显示最新的多少行 */
+        private const val LOG_SHOW = 24
     }
 }
