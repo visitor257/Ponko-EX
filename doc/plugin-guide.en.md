@@ -374,7 +374,7 @@ fills these fields in — they are no longer "declared but never used":
 
 | Field | Filled by | Notes |
 |---|---|---|
-| `text` | user input | capped at 40 chars (phone RTF; longer means minutes of waiting) |
+| `text` | user input | **no length cap**, multi-line. The host only shows a time estimate beside it; it never blocks or truncates |
 | `mode` | chosen in the UI | `0` plain / `1` clone / `2` continuation |
 | `referenceAudio` | host opens the user's file | **an already-open FD**; non-null only when `mode≥1` |
 | `referenceTranscript` | user input | filled for `mode=2`; may be empty for `mode=1` |
@@ -389,6 +389,30 @@ belong in the plugin's **own** `UiSchema`; the host stays out of it.
 So plugins must tolerate missing values: `<= 0`, `< 0`, and empty strings all mean
 "use my default". The host guarantees exactly one thing — when `mode≥1`,
 `referenceAudio` is non-null (the UI blocks it otherwise).
+
+### `text` has no length cap, so length is your problem
+
+This matters, because it decides whether you should impose your own limit.
+
+**The host does not limit, truncate, or interrupt.** If the user wants to synthesise
+a 5000-character article, the UI lets them — how long they wait is their judgement,
+and the host merely shows a rough time estimate beside the field.
+
+Why no cap: **UI is UI, inference is inference.** The host neither knows your RTF nor
+has any standing to decide what counts as "too long" for every plugin. A global cap
+would rope in lightweight models (Piper and friends) too — 40 characters is pointless
+for them. (The host did hard-cap at 40 for a while. That was wrong and has been
+removed.)
+
+So what should a plugin do:
+
+| Situation | What to do |
+|---|---|
+| Can handle any length | Nothing. This is the normal case |
+| Has a hard limit (context window, VRAM) | Check it yourself and return `PluginException.invalidRequest("text exceeds N chars, please split")` |
+| Length changes internal strategy | Branch on `req.text.length` yourself (smaller batches for long text) |
+
+**Don't count on the host blocking first.** It used to; that was a mistake.
 
 ### Two file descriptors, two owners
 
