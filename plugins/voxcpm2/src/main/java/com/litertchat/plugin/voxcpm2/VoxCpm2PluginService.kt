@@ -52,6 +52,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     // ---- 引擎状态：全部是 volatile，因为 getSettingsSchema() 跑在宿主 Binder 线程上 ----
     @Volatile private var nativeReady = false
+    /** 「卸载引擎」点下去之后、原生真的 free 完之前的短暂状态 */
+    @Volatile private var engineUnloading = false
     @Volatile private var sampleRate = 48_000
     @Volatile private var loadedBytes = 0L
     @Volatile private var loadedSourceKey = ""
@@ -155,7 +157,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.2.1",
+        versionName = "0.2.2",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -169,6 +171,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     override fun loadEngineBlocking(models: ModelBundle?, config: EngineConfig): EngineInfo {
         val t0 = SystemClock.elapsedRealtime()
+        // 卸载后 600 ms 内又点了加载：把"正在释放"清掉，否则界面会一直显示它
+        engineUnloading = false
 
         val chosen = pickUsableSource()
             ?: run {
@@ -238,17 +242,34 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun closeEngineBlocking() {
         // 幂等：用户点「卸载引擎」、停用插件、页面销毁、进程回收都会调
         val wasReady = nativeReady
+        engineUnloading = wasReady
+        // 先让界面从"已就绪"切到"正在释放"。否则卸载的几百毫秒里，
+        // 宿主功能区在说"正在卸载引擎"，插件页却已经写"未加载 · 点加载"—— 自相矛盾
+        if (wasReady) notifySchemaChanged()
+
         runCatching { VoxCpm2Bridge.nativeFree() }
             .onFailure { Log.w(TAG, "nativeFree 失败", it) }
         nativeReady = false
         loadedBytes = 0L
         loadedSourceKey = ""
+        loadedThreads = 0
         if (wasReady) {
             refreshDeviceStats()
             logLine("引擎已释放 · 内存回到 ${gb(devMemAvail)} 可用")
-            // 宿主只负责把自己的「卸载引擎」按钮改回「加载引擎」，
-            // **不会重画插件页** —— 不喊这一声，「引擎」那行会一直写着"已就绪"。
-            notifySchemaChanged()
+            // ⚠ 不能在这里通知完事：SDK 是在 closeEngineBlocking **返回之后**
+            // 才把 state 设成 UNLOADED 的。立即通知的话，宿主那唯一一次 250 ms
+            // 抽查读到的还是 READY，按钮就停在「卸载引擎」—— 用户再点一下，
+            // 走的是 engineReady()==false 的分支，其实是"加载"。
+            // 延迟一会儿再喊，让宿主重画时读到的已经是卸载后的状态。
+            Thread({
+                try {
+                    Thread.sleep(UNLOAD_SETTLE_MS)
+                } catch (_: InterruptedException) {
+                    // 进程在退出，没必要处理
+                }
+                engineUnloading = false
+                notifySchemaChanged()
+            }, "voxcpm2-unload").apply { isDaemon = true; start() }
         }
     }
 
@@ -490,6 +511,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(
             key = "st_engine", type = UiType.STATUS, label = "引擎",
             value = when {
+                engineUnloading -> "正在释放内存…"
                 nativeReady -> "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程"
                 // 宿主从 2.0.0 起不再替所有插件自动加载（见插件文档 §6.1）：
                 // 这个插件不声明 AUTOLOAD_ENGINE，所以"未加载"是正常起点，不是故障
@@ -633,7 +655,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 "三种模式：普通合成（可在文本前用括号写音色描述）、声音克隆（只给参考音频）、" +
                 "极致克隆（参考音频 + 逐字稿，最像）。\n\n" +
                 "首次加载引擎约 10~30 秒，加载后一直留着（重复点只会立刻返回）。" +
-                "想腾内存点上面「卸载引擎」，或在卡片上停用插件。",
+                "想腾内存点上面「卸载引擎」，或在卡片上停用插件。\n\n" +
+                "注意：每次点「试听」都会重新推理一遍 —— 宿主不缓存上一次的结果，" +
+                "想再听同一段就要再等一次。要留住音频，合成完点「保存」。",
         )
         items += UiItem(
             key = "license", type = UiType.INFO,
@@ -867,5 +891,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         /** 界面上一屏最多显示最新的多少行 */
         private const val LOG_SHOW = 24
+
+        /**
+         * 卸载后延迟多久再通知界面重画。
+         *
+         * SDK 在 [closeEngineBlocking] 返回之后才把 state 设成 UNLOADED，
+         * 而宿主只在点完卸载的 250 ms 后抽查一次 `isEngineReady()`。
+         * 通知得太早，宿主读到的仍是 READY，按钮就卡在「卸载引擎」上。
+         */
+        private const val UNLOAD_SETTLE_MS = 600L
     }
 }

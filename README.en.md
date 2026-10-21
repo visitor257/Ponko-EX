@@ -159,6 +159,9 @@ To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxC
 - **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
 - **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
 - **One download source** — ModelScope only, no hf-mirror fallback
+- **There is no "replay"** — the host offers a single *Preview* action, which means
+  "synthesise once, then play". There is no button to replay the last result, so hearing
+  the same line again costs another full inference (minutes). Tap *Save* to keep the audio
 - **Long text is slow** — there is no hard character cap (the plugin never truncates), but
   phone RTF is 10–30, so 40 characters is already minutes
 - **Cancellation is not instantaneous** — the native side checks between audio chunks; if it
