@@ -26,8 +26,21 @@ object AudioUtil {
 
     private data class Pcm(val samples: FloatArray, val sampleRate: Int)
 
-    fun toReferenceWav(fd: FileDescriptor, out: File): Boolean {
-        val pcm = decodeToMono(fd) ?: return false
+    fun toReferenceWav(fd: FileDescriptor, out: File): Boolean =
+        toReferenceWav(out) { it.setDataSource(fd) }
+
+    /**
+     * 从本地文件解码。
+     *
+     * 插件现在先把宿主给的 FD 复制到这个路径再调它：`MediaExtractor` 需要能随机 seek，
+     * 而 SAF 的 FD 可能指向网盘文档（一个不可 seek 的管道）。先落盘一次，
+     * 既避开这个坑，也遵守"别把宿主的 FD 当长期输入"（见插件手册第 8 节）。
+     */
+    fun toReferenceWav(srcPath: String, out: File): Boolean =
+        toReferenceWav(out) { it.setDataSource(srcPath) }
+
+    private fun toReferenceWav(out: File, attach: (MediaExtractor) -> Unit): Boolean {
+        val pcm = decodeToMono(attach) ?: return false
         if (pcm.samples.isEmpty()) return false
         val resampled = resample(pcm.samples, pcm.sampleRate, TARGET_SAMPLE_RATE)
         return writeWav(out, resampled, TARGET_SAMPLE_RATE)
@@ -47,11 +60,11 @@ object AudioUtil {
         0.0
     }
 
-    private fun decodeToMono(fd: FileDescriptor): Pcm? {
+    private fun decodeToMono(attach: (MediaExtractor) -> Unit): Pcm? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            extractor.setDataSource(fd)
+            attach(extractor)
 
             var trackIndex = -1
             var format: MediaFormat? = null

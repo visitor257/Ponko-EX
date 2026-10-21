@@ -23,6 +23,7 @@ import com.litertchat.plugin.UiOption
 import com.litertchat.plugin.UiSchema
 import com.litertchat.plugin.UiType
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
@@ -51,6 +52,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     @Volatile private var sampleRate = 48_000
     @Volatile private var loadedBytes = 0L
     @Volatile private var loadedSourceKey = ""
+    @Volatile private var loadedThreads = 0
 
     // ---- 下载状态 ----
     @Volatile private var downloading = false
@@ -132,8 +134,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
             )
         }
 
+        // 宿主（Ponko 2.0.0 起）在插件页给了「推理线程」，连上时传的是真值：
+        // 默认 核数-1，夹在 1..6。只有用户选了「自动」（宿主传 0）才退回自己的估算。
+        val cores = Runtime.getRuntime().availableProcessors()
         val threads = if (config.threads > 0) config.threads
-        else min(4, Runtime.getRuntime().availableProcessors())
+        else (cores - 1).coerceIn(2, 6)
 
         val rc = VoxCpm2Bridge.nativeInit(
             ModelStore.fileFor(this, chosen.baseLm).absolutePath,
@@ -149,6 +154,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         sampleRate = VoxCpm2Bridge.nativeSampleRate().takeIf { it > 0 } ?: 48_000
         loadedBytes = chosen.totalBytes
         loadedSourceKey = chosen.key
+        loadedThreads = threads
         nativeReady = true
 
         Log.i(TAG, "引擎就绪：${chosen.key} / ${ModelStore.human(loadedBytes)} / ${threads} 线程 / $sampleRate Hz")
@@ -203,15 +209,50 @@ class VoxCpm2PluginService : PonkoPluginService() {
             val fd = req.referenceAudio
                 ?: throw PluginException.invalidRequest("这个模式需要一段参考音频")
 
+            // 宿主把用户选的文档 open 成 FD 交过来。Binder 传参时系统 dup 过，
+            // 所以我们手上这份是独立句柄、由我们负责关。
+            //
+            // 但不要直接拿它去解码：MediaExtractor 需要随机 seek，而 SAF 背后
+            // 可能是个管道（网盘里的文档）。先复制到自己目录，再按本地路径解码。
+            out.stage(Stage.LOADING, "读取参考音频")
+            val raw = File(cache, "ref_in_${System.currentTimeMillis()}")
+            val copied = try {
+                ParcelFileDescriptor.AutoCloseInputStream(fd).use { input ->
+                    raw.outputStream().use { sink ->
+                        val buf = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            total += n
+                            if (total > MAX_REFERENCE_BYTES) {
+                                throw IOException(
+                                    "文件超过 ${MAX_REFERENCE_BYTES / 1024 / 1024} MB，参考音频只要 5~10 秒"
+                                )
+                            }
+                            sink.write(buf, 0, n)
+                        }
+                        total
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "参考音频读取失败", t)
+                raw.delete()
+                throw PluginException.invalidRequest(
+                    "参考音频读不出来：${t.message ?: t.javaClass.simpleName}。换一段本地音频试试。"
+                )
+            }
+            if (copied <= 0L) {
+                raw.delete()
+                throw PluginException.invalidRequest("参考音频是空文件")
+            }
+
             out.stage(Stage.LOADING, "解码参考音频")
             val wav = File(cache, "ref_${System.currentTimeMillis()}.wav")
-            val ok = try {
-                fd.use { AudioUtil.toReferenceWav(it.fileDescriptor, wav) }
-            } catch (t: Throwable) {
-                Log.w(TAG, "参考音频解码失败", t)
-                false
-            }
+            val ok = AudioUtil.toReferenceWav(raw.absolutePath, wav)
+            raw.delete()
             if (!ok) {
+                wav.delete()
                 throw PluginException.invalidRequest(
                     "参考音频解码失败。换一段 5~10 秒、能正常播放的音频试试。"
                 )
@@ -260,6 +301,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             }
         }, "voxcpm2-progress").apply { isDaemon = true; start() }
 
+        val tGen = SystemClock.elapsedRealtime()
         val ok = try {
             VoxCpm2Bridge.nativeGenerate(
                 text, mode, refWav, promptText,
@@ -270,6 +312,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             finished.set(true)
             runCatching { poller.join(1_500) }
         }
+        val genMs = SystemClock.elapsedRealtime() - tGen
 
         if (out.isCancelled) throw PluginException(ErrCode.CANCELLED, "已取消")
 
@@ -294,17 +337,22 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 ?.forEach { it.delete() }
         }
 
+        // 宿主的「诊断信息」区会原样显示这段（用户能长按复制），所以只放对排查有用的：
+        // 模式、量化、线程、参数、采样率、RTF。不放路径，也不放用户文本原文。
+        val rtf = if (seconds > 0.05) genMs / 1000.0 / seconds else 0.0
         return ResultBundle(
             requestId = req.requestId,
             sampleRate = sampleRate,
             channelCount = 1,
             durationMs = (seconds * 1000).toLong(),
-            elapsedMs = 0L,   // 基类会用实际耗时覆盖
+            elapsedMs = genMs,
             audioFormat = PluginConst.FMT_WAV,
             audio = ParcelFileDescriptor.open(outFile, ParcelFileDescriptor.MODE_READ_ONLY),
             inlineAudio = null,
-            debugInfo = "voxcpm2 mode=$mode src=$loadedSourceKey cfg=$useCfg steps=$useSteps seed=$seed " +
-                "text=${rawText.length}chars design=${if (design.isNotEmpty()) "yes" else "no"}",
+            debugInfo = "voxcpm2 mode=$mode src=$loadedSourceKey threads=$loadedThreads " +
+                "cfg=$useCfg steps=$useSteps seed=$seed sr=$sampleRate " +
+                "text=${rawText.length}chars design=${if (design.isNotEmpty()) "yes" else "no"} " +
+                "audio=${"%.1f".format(seconds)}s gen=${genMs}ms rtf=${"%.2f".format(rtf)}",
         )
     }
 
@@ -550,6 +598,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
         private const val KEY_CFG = "cfg"
         private const val KEY_STEPS = "steps"
         private const val KEY_VOICE = "voice"
+
+        /** 参考音频上限：只要 5~10 秒，给足余地但不让用户把几百 MB 的音频塞进来 */
+        private const val MAX_REFERENCE_BYTES = 64L * 1024 * 1024
 
         private const val INTRO =
             "**VoxCPM2**（OpenBMB，2B）本地语音合成：30 种语言、9 种中文方言，" +

@@ -1,145 +1,203 @@
-# Ponko-EX
+# Ponko-EX · VoxCPM2
 
-Plugin project for Ponko. **A standalone project, separate from the host app** —
-it only depends on the plugin SDK AAR and touches none of the host's own code.
+A speech-synthesis plugin for [Ponko](https://github.com/visitor257/Ponko):
+[VoxCPM2](https://github.com/OpenBMB/VoxCPM) (OpenBMB, 2B) running **offline** on the phone.
 
 [中文](README.md)
 
-## One line, one job
+**A 4.6 MB plugin plus 3.5 GB of weights (downloaded on first run) — a TTS with no network.**
+No server, no API key, no telemetry. It works in airplane mode.
 
-This repo splits work by **branches**. Same working tree; `git checkout` moves you
-between them.
+|  |  |
+|---|---|
+| Host | Ponko **2.0.0** or newer (the `LiteRT-Chat` main line) |
+| Platform | Android 9+ (minSdk 28) · **arm64-v8a only** |
+| Engine | llama.cpp-omni's `voxcpm2_runtime` plus a hand-written JNI (statically linked, 5.6 MB) |
+| Licence | Code MIT · VoxCPM2 weights Apache-2.0 (see [NOTICE.md](plugins/voxcpm2/NOTICE.md)) |
 
-| Branch | Contents | Purpose |
+## What it does
+
+- **30 languages and 9 Chinese dialects**, no language tag needed — the model works it out
+- **Voice design**: `(young woman, soft and sweet)Hello there` — describe a voice in
+  parentheses and get one that never existed
+- **Zero-shot cloning**: 5–10 seconds of clean audio is enough to copy a timbre
+- **Continuation cloning**: reference audio *plus* its transcript, reproducing pauses and
+  intonation as well
+- **48 kHz output**, straight out of the AudioVAE decoder, no extra upsampler
+
+## Install
+
+1. Install `Ponko-EX_VoxCPM2_release.apk`
+2. Open Ponko → **Plugins** → enable **VoxCPM2**
+3. Tap **Download weights** on the plugin page (3.55 GB, resumable, **use Wi-Fi**)
+4. Once the status line reads *engine ready*, go back and synthesise
+
+> **The signature must match the host.** Ponko protects plugin binding with a
+> `signature`-level permission, so a mismatched key makes `bindService` throw
+> `SecurityException` and the UI only says "binding failed".
+> This build is signed with Ponko's main-line `ponko-release.jks`; install it on a host
+> built from another line (e.g. `hw`) and you have to re-sign.
+
+## Using it
+
+### Host side: preview parameters
+
+Ponko 2.0.0's plugin page has a *preview parameters* block, and these values really do
+reach `SynthesisRequest`:
+
+| Parameter | Notes |
+|---|---|
+| Text | Capped at 40 characters. Phone RTF is 10–30, so 40 characters already means minutes |
+| Mode | plain / clone / continuation |
+| Reference audio | Picked from a file; the host opens it and passes an FD, the plugin decodes and resamples to 16 kHz |
+| Transcript | Required for continuation only |
+| Seed | `0` = random. Pin it to reproduce the same delivery |
+| Threads | auto (cores−1) / 2 / 4 / 6; takes effect on the next engine load |
+
+Pressing **Stop** mid-generation really interrupts: the plugin turns the host's cancel
+into `nativeCancel()`, and the native side checks it on every audio chunk — normally out
+within a few seconds, depending on which stage it is stuck in.
+
+### Plugin side: its own settings
+
+The host never sends `cfg` / `timesteps`; sensible ranges depend entirely on the model,
+so the plugin exposes them in its own UI:
+
+| Setting | Default | Range | Notes |
+|---|---|---|---|
+| CFG guidance | 2.0 | 1.0–4.0 | Higher sticks closer to the text, lower is freer |
+| Diffusion steps | 10 | 4–24 | More is finer, and linearly slower |
+| Voice design description | empty | — | Equivalent to the host's `voiceDescription`; if both are empty no prefix is added |
+
+The page also shows three status lines (engine / weights / disk), a download-source
+choice, and download / cancel / delete actions.
+
+## The three modes
+
+| Mode | Needs | Good for |
 |---|---|---|
-| `main` | This README, `doc/`, `log/`, plus the build skeleton. **No plugin modules.** | The main line. Docs and conventions live here |
-| `Ponko-EX_test` | Everything above + `plugins/echo` (the Echo test plugin) | The test line. Verifies the pipeline, doubles as a template |
-| `Ponko-EX_VoxCPM2` | Everything above + `plugins/voxcpm2` (VoxCPM2 speech synthesis) | The first real plugin line. 4.6 MB APK; weights downloaded at run time |
+| Plain TTS (0) | text | General reading, the default |
+| Clone (1) | reference audio | A particular timbre, arbitrary content |
+| Continuation (2) | reference audio + transcript | Reproducing a performance: rhythm, pauses, tone |
 
-```bash
-git checkout Ponko-EX_test     # go to the test line; switch here to build Echo
-git checkout Ponko-EX_VoxCPM2  # go to the VoxCPM2 line (a real plugin)
-git checkout main              # back to the main line, docs only
+**Choosing reference audio**: 5–10 seconds, one speaker, no music, no reverb. wav / mp3 /
+m4a / flac all work (decoded through `MediaCodec`, then resampled to 16 kHz).
+
+## Weights
+
+Not in the APK — 3.5 GB is not shippable. Downloaded on first use into the plugin's own
+external private directory:
+
+```
+Android/data/com.litertchat.plugin.voxcpm2/files/models/
 ```
 
-**Why the test plugin isn't on the main line**: the main line is reserved for
-plugins that actually ship — one branch per model family (VoxCPM2 and friends).
-The test plugin is scaffolding. Once it has proven the pipeline and been copied
-as a template, it should step aside instead of occupying the main line forever.
+| Source | BaseLM | Acoustic | Total | Notes |
+|---|---|---|---|---|
+| **Standard** (default) | Q8_0 1.73 GB | F16 1.83 GB | **3.55 GB** | Repository declares `apache-2.0` |
+| Compact | Q4_K_M 1.00 GB | F16 1.83 GB | **2.83 GB** | Third-party GGUF conversion, **no licence field** |
 
-> ⚠ Running a build on `main` reports "no plugin modules". That is **expected**,
-> not a failure.
+Both come from ModelScope and support HTTP `Range`, so an interrupted download resumes.
+The default is the standard source not because it sounds much better, but because its
+provenance is unambiguous — if a distribution ever bundles the weights, there is nothing
+extra to explain.
+
+`Acoustic` is the same file in both sets, but **`BaseLM` and `Acoustic` must come from the
+same release**; mixing them produces noise.
+
+## Performance
+
+| | |
+|---|---|
+| RTF | Roughly **10–30** on a phone's CPU (a desktop 4090 gets 0.3) |
+| 5 s of speech | About **1–2 minutes** |
+| Memory | 3.55 GB of weights plus KV cache; **an 8 GB device is recommended** — available memory is checked before loading |
+| Disk | 4 GB (weights plus cache) |
+
+A 6 GB device may not manage it. Rather than let the system OOM-kill the process, the load
+step reports "X GB available, Y GB needed".
+
+## Building
+
+The path is pure ASCII, so AGP accepts it and the build happens in place — no sandbox copy.
+
+```bat
+tools\build.bat :plugins:voxcpm2:assembleRelease
+```
+
+The output is unsigned:
+
+```
+plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk
+```
+
+Sign it with the host's key (all three schemes v1 + v2 + v3 are enabled):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File <host>\tools\sign-apk.ps1 `
+  -Apk <unsigned.apk> -Out ...\Ponko-EX_VoxCPM2_release.apk
+```
+
+**Don't use `gradlew`** — the wrapper's dists are empty on this machine.
+`tools\build.bat` loads the MSVC environment, points at JDK 17 and the Android SDK, and
+passes `--no-daemon`.
+
+The native library is **not** built here. `libvoxcpm2jni.so` is a prebuilt artefact
+(NDK 27 + CMake, cross-compiled for arm64, statically linking `voxcpm2_runtime`, 5.77 MB
+after `llvm-strip`) dropped into `plugins/voxcpm2/src/main/jniLibs/arm64-v8a/`.
+To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxCPM2插件线.md) (Chinese).
+
+## Known limitations
+
+- **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
+- **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
+- **One download source** — ModelScope only, no hf-mirror fallback
+- **The 40-character cap is the host's** — the plugin does not truncate, but you cannot type more
+- **Cancellation is not instantaneous** — the native side checks between audio chunks; if it
+  is stuck in LLM prefill, expect a few seconds
+- **Results stay in the plugin cache** — `cache/synth/`, only the last three are kept. Use
+  the host's *Save* action for anything you want to keep
+
+## Licence
+
+- Plugin code, JNI, docs: [MIT](LICENSE) — `Copyright (c) 2026 visitor257`
+- Inference engine `llama.cpp-omni` / `ggml`: **MIT**, copyright the ggml authors; full text
+  and attribution in [NOTICE.md](plugins/voxcpm2/NOTICE.md)
+- VoxCPM2 weights: **Apache-2.0**, downloaded by the user, licensed with the weights and
+  unaffected by this repository's licence
+
+MIT allows commercial use, modification and closed-source distribution, on condition that
+the copyright notice and permission text are retained. Hence `NOTICE.md` in the repo and a
+licence section shown to users inside the plugin.
+
+> Two more requirements that have nothing to do with open source but still apply:
+> **voice rights** (China's Civil Code art. 1023 treats a person's voice like a portrait) —
+> get consent before cloning a real person; and **deep-synthesis labelling** (the 2023
+> Provisions on the Administration of Deep Synthesis) — generated audio published publicly
+> must be identifiable. Recording yourself and listening offline involves neither.
 
 ## Layout
 
 ```
-Ponko-EX/
-├── README.md / README.en.md        this file (Chinese / English)
-├── doc/
-│   ├── plugin-guide.md             plugin developer's guide
-│   └── plugin-guide.en.md          same, in English
-├── log/
-│   ├── README.md                   what this folder is
-│   └── 2026-10-21-*.md             problems hit during development (Chinese, informal)
-├── settings.gradle.kts             local maven repo pointing at the plugin SDK
-├── build.gradle.kts                KGP version must match the host
-├── gradle.properties
-├── tools/build.bat                 pure ASCII; loads the MSVC env, then builds in place
-├── tools/push-via-api.py           push over the REST API when git push is blocked
-└── plugins/                        only on plugin branches
-    ├── echo/                       on Ponko-EX_test
-    └── voxcpm2/                    on Ponko-EX_VoxCPM2 (see NOTICE.md for licensing)
+Ponko-EX/                           this branch is the project
+├── README.md / README.en.md
+├── LICENSE                         MIT
+├── doc/                            plugin developer guide (snapshot; newest lives on main)
+├── log/                            problems hit on this line
+├── tools/build.bat                 build script (loads MSVC, builds in place)
+└── plugins/voxcpm2/
+    ├── build.gradle.kts            package name / minSdk / arm64 filter
+    ├── NOTICE.md                   third-party licences and attribution (read before shipping)
+    └── src/main/
+        ├── AndroidManifest.xml     service and activator only, **no launcher icon**
+        ├── jniLibs/arm64-v8a/      libvoxcpm2jni.so (prebuilt)
+        ├── res/                    icon and strings
+        └── java/com/litertchat/plugin/voxcpm2/
+            ├── VoxCpm2Activator.kt      the page the host opens to enable the plugin
+            ├── VoxCpm2PluginService.kt  the service: load, synthesise, settings UI, download
+            ├── VoxCpm2Bridge.kt         the ten native declarations
+            ├── ModelStore.kt            weight manifest and resumable download
+            └── AudioUtil.kt             reference audio → 16 kHz mono WAV
 ```
 
-## Where the docs are
-
-| I want to know | Read |
-|---|---|
-| How to write a plugin, what the interface looks like, how to supply UI config | [`doc/plugin-guide.en.md`](doc/plugin-guide.en.md) |
-| Why something is designed this way, which traps were hit | [`log/`](log/) (Chinese only) |
-
-The guide tells you **how**. `log/` tells you **why**. If you followed the guide
-and it still doesn't work, read `log/` first — someone has probably hit it already.
-
-## Prerequisite: publish the plugin SDK
-
-Plugins depend on the `com.litertchat.ponko:plugin-sdk` AAR, which the **host**
-publishes into a local maven repo:
-
-```bat
-:: run inside the host's build sandbox
-tools\build-android.bat :ponko-plugin-sdk:publishReleasePublicationToLocalRepoRepository
-```
-
-The artifact lands in the local maven repo (path is in the
-`maven { url = ... }` block of `settings.gradle.kts`).
-
-> ⚠ **Any change to an AIDL file or a Parcelable requires republishing**, otherwise
-> plugins here are built against the old interface. The symptom is a runtime
-> `NoSuchMethodError` or mis-decoded Parcel values — nasty to trace.
->
-> The reverse holds too: **rebuilding only the host is useless.** Plugins consume
-> the AAR in the local maven repo, not the host's source tree.
-
-## Building
-
-The project path is pure ASCII, so AGP accepts it and the build runs **in place**
-— no need to sync into a sandbox first.
-
-```bat
-tools\build.bat :plugins:echo:assembleRelease
-```
-
-Output: `plugins\echo\build\outputs\apk\release\echo-release-unsigned.apk`
-
-`tools\build.bat` does three things, and the build fails without any of them:
-
-1. Loads the MSVC environment (`vcvars64.bat`) — without it CMake can't find a build program
-2. Points at JDK 17 and the Android SDK
-3. Invokes gradle with `--no-daemon`
-
-**Don't use `gradlew`**: the wrapper's dists directory is empty on this machine;
-it just hangs or errors out.
-
-> ⚠ `.bat` files must stay **pure ASCII**. cmd.exe parses them with the OEM codepage
-> (GBK), so Chinese comments get mangled, break `if` blocks, and have historically
-> made a script re-run itself into a 22 MB log.
-
-## Signing (critical)
-
-The host protects plugin binding with a `protectionLevel="signature"` permission,
-so **a plugin must be signed with the same key** — otherwise `bindService` throws
-`SecurityException` outright.
-
-Use the host project's signing script (it pins v1 + v2 + v3 schemes on):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File <host>\tools\sign-apk.ps1 `
-  -Apk <unsigned.apk> -Out <signed.apk>
-```
-
-Keys and passwords **never enter the repo**: `.gitignore` blocks `*.jks`,
-`*.keystore`, and `keystore.properties`. The script reads passwords from
-`keystore.properties` or environment variables.
-
-Verifying:
-
-```bat
-apksigner verify --verbose --min-sdk-version 23 <apk>
-:: v1 / v2 / v3 should all report true
-```
-
-## License
-
-[MIT](LICENSE) — covers the code, the docs, and the sample plugins.
-
-```text
-Copyright (c) 2026 visitor257
-```
-
-In short: use it, modify it, ship it commercially, keep it closed — just keep the
-copyright notice. There is **no warranty of any kind**; plugins run on your device
-and drive your models, so the consequences are yours.
-
-> The host app (Ponko) uses the same licence, but the two repositories are
-> independent: the host's `LICENSE` does not cover files here, and vice versa.
+`doc/` and `log/` are background for developing this plugin, not part of it at run time.

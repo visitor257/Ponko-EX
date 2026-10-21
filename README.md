@@ -1,132 +1,190 @@
-# Ponko-EX
+# Ponko-EX · VoxCPM2
 
-Ponko 的插件工程。**与宿主 Ponko 分开的独立工程**，只依赖插件 SDK 的 AAR，
-不碰宿主任何实现代码。
+给 [Ponko](https://github.com/visitor257/Ponko) 用的语音合成插件：
+把 [VoxCPM2](https://github.com/OpenBMB/VoxCPM)（OpenBMB，2B）放进手机里**离线**跑。
 
 [English](README.en.md)
 
-## 一条线一件事
+**4.6 MB 的插件 + 3.5 GB 权重（首次自己下）= 一个不联网的 TTS。**
+没有服务端、没有 API key、没有遥测。飞行模式也能念。
 
-这个仓库用**分支**分线。同一份工作树，`git checkout` 切过去就是另一条线。
+|  |  |
+|---|---|
+| 宿主 | Ponko **2.0.0** 及以上（主线 `LiteRT-Chat`） |
+| 平台 | Android 9+（minSdk 28）· **arm64-v8a only** |
+| 内核 | llama.cpp-omni 的 `voxcpm2_runtime` + 自写 JNI（静态链接，5.6 MB） |
+| 许可 | 代码 MIT · VoxCPM2 权重 Apache-2.0（见 [NOTICE.md](plugins/voxcpm2/NOTICE.md)） |
 
-| 分支 | 内容 | 用途 |
+## 能做什么
+
+- **30 种语言 + 9 种中文方言**，不用打语种标签，模型自己认
+- **音色设计**：`(年轻女性，声音温柔甜美)你好呀` —— 括号里写描述，凭空造一个不存在的声音
+- **零样本克隆**：一段 5～10 秒干净音频，复制音色
+- **极致克隆**：参考音频 + 它的逐字稿，连停顿和语气一起还原
+- **48 kHz 输出**，AudioVAE 解码端直接出，不做二次超分
+
+## 装
+
+1. 装 `Ponko-EX_VoxCPM2_release.apk`
+2. 打开 Ponko →「插件」→ 启用「VoxCPM2」
+3. 插件页点「下载权重」（3.55 GB，支持断点续传，**建议 Wi-Fi**）
+4. 状态行变成「引擎就绪」后，回到试听区合成
+
+> **签名必须和宿主一致。** 宿主用 `protectionLevel="signature"` 保护插件绑定，
+> 密钥不一致时 `bindService` 直接抛 `SecurityException`，界面上只会显示「绑定失败」。
+> 这个包是用 Ponko 主线那把 `ponko-release.jks` 签的；换 `hw` 线的宿主装就要重签。
+
+## 用
+
+### 宿主侧：试听参数
+
+Ponko 2.0.0 的插件页给了一块「试听参数」，这些值会真的进 `SynthesisRequest`：
+
+| 参数 | 说明 |
+|---|---|
+| 文本 | 上限 40 字。手机 RTF 10～30，40 字已经要等几分钟 |
+| 模式 | 纯 TTS / 克隆 / 极致克隆 |
+| 参考音频 | 从文件选，宿主 open 成 FD 交过来；插件自己解码、重采样到 16 kHz |
+| 逐字稿 | 仅「极致克隆」必填 |
+| 种子 | `0` = 随机。固定它才能复现同一段演绎 |
+| 推理线程 | 自动（核数-1）/ 2 / 4 / 6，改动在下次加载引擎时生效 |
+
+生成中点「停止」会真的打断：插件把宿主的取消意图转成 `nativeCancel()`，
+原生在音频回调里逐块检查，一般几秒内退出（取决于当时卡在哪个阶段）。
+
+### 插件侧：自己的设置
+
+宿主不传 `cfg` / `timesteps` —— 合理范围强依赖模型，这两项由插件自己在界面里给：
+
+| 项 | 默认 | 范围 | 说明 |
+|---|---|---|---|
+| CFG 引导强度 | 2.0 | 1.0–4.0 | 越大越贴文本，越小越自由 |
+| 扩散步数 | 10 | 4–24 | 越多越细，但线性变慢 |
+| 语音设计描述 | 空 | — | 等价于宿主传 `voiceDescription`；两边都空就不加前缀 |
+
+界面里还有三行状态（引擎 / 权重 / 磁盘）、下载源选择、下载 / 取消下载 / 删除权重。
+
+## 三种模式
+
+| 模式 | 需要什么 | 适合 |
 |---|---|---|
-| `main` | 本 README、`doc/`、`log/` + 构建骨架，**没有任何插件模块** | 主线。文档和约定都住这儿 |
-| `Ponko-EX_test` | 上面全部 + `plugins/echo`（Echo 测试插件） | 测试线。验证链路、当模板 |
-| `Ponko-EX_VoxCPM2` | `main` 全部 + `plugins/voxcpm2`（VoxCPM2 语音合成插件） | 正式插件线。第一条真插件，APK 4.6 MB，权重运行时下载 |
+| 纯 TTS（0） | 文本 | 通用朗读，默认 |
+| 克隆（1） | 参考音频 | 想要某个音色，但内容随便说 |
+| 极致克隆（2） | 参考音频 + 逐字稿 | 复刻一段演绎：节奏、停顿、语气 |
 
-```bash
-git checkout Ponko-EX_test     # 去测试线，要编 Echo 就切过去
-git checkout Ponko-EX_VoxCPM2  # 去 VoxCPM2 线（正式插件）
-git checkout main              # 回主线，只有文档
+**参考音频怎么选**：5～10 秒、单人、无背景音乐、无混响。wav / mp3 / m4a / flac
+都行（插件用 `MediaCodec` 解码，再重采样到 16 kHz）。
+
+## 权重
+
+不进 APK：3.5 GB 没法发版。首次使用时下到插件自己的外部私有目录：
+
+```
+Android/data/com.litertchat.plugin.voxcpm2/files/models/
 ```
 
-**为什么测试插件不在主线**：主线留给真正要发布的插件，每个模型家族一条线
-（VoxCPM2 等）。测试插件是脚手架 —— 它验完链路、被抄成模板之后就该让位，
-不该长期占着主线的位置。
+| 源 | BaseLM | Acoustic | 合计 | 备注 |
+|---|---|---|---|---|
+| **标准源**（默认） | Q8_0 1.73 GB | F16 1.83 GB | **3.55 GB** | 仓库明确声明 `apache-2.0` |
+| 精简源 | Q4_K_M 1.00 GB | F16 1.83 GB | **2.83 GB** | 第三方 GGUF 转换件，**仓库未声明许可** |
 
-> ⚠ 在 `main` 上跑构建会提示「没有插件模块」。那是**预期行为**，不是坏了。
+两个源都走魔搭（ModelScope），都支持 `Range` 断点续传 —— 中断了再点一次接着下。
+默认选标准源不是因为它音质好多少，是因为**归属清楚**：将来要分发带权重的整包时，
+不需要为许可再解释一遍。
+
+两套里的 `Acoustic` 是同一个文件；**`BaseLM` 和 `Acoustic` 必须来自同一次发布**，
+混搭会出噪声。
+
+## 性能预期
+
+| | |
+|---|---|
+| RTF | 手机纯 CPU 约 **10～30**（桌面 4090 是 0.3） |
+| 5 秒语音 | 约 **1～2 分钟** |
+| 内存 | 权重 3.55 GB + KV cache，**建议 8 GB 机型**；加载前会预检可用内存 |
+| 磁盘 | 4 GB（权重 + 缓存） |
+
+6 GB 机型不一定跑得动：加载前会报「可用 X GB，需要 Y GB」而不是让系统 OOM 掉整个进程。
+
+## 构建
+
+工程路径是纯 ASCII，AGP 直接接受，**就地构建**，不用同步到沙箱。
+
+```bat
+tools\build.bat :plugins:voxcpm2:assembleRelease
+```
+
+产物是未签名的：
+
+```
+plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk
+```
+
+用宿主那把密钥签名（固定 v1 + v2 + v3 三方案全开）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File <宿主>\tools\sign-apk.ps1 `
+  -Apk <unsigned.apk> -Out ...\Ponko-EX_VoxCPM2_release.apk
+```
+
+**别用 `gradlew`**：本机 wrapper 的 dists 是空的。`tools\build.bat` 负责载入 MSVC 环境、
+指定 JDK 17 / Android SDK，并带 `--no-daemon`。
+
+原生库**不在这里编**。`libvoxcpm2jni.so` 是预编译产物（NDK 27 + CMake 交叉编译
+arm64，静态链接 `voxcpm2_runtime`，`llvm-strip` 后 5.77 MB），直接放进
+`plugins/voxcpm2/src/main/jniLibs/arm64-v8a/`。要重新生成它，见
+[`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxCPM2插件线.md)。
+
+## 已知限制
+
+- **只支持 arm64**：x86 平板装不上（`abiFilters` 就一个）
+- **不支持流式**：`req.streamAudio` 会被忽略，整段生成完一次性交回
+- **权重只有魔搭一个下载源**：没有 hf-mirror 兜底，魔搭抽风时只能等
+- **40 字上限是宿主侧的**：插件不截断，但界面上填不进去更多
+- **取消不是瞬时的**：原生在音频回调里检查取消标志；若正卡在 LLM 预填充阶段，
+  可能要几秒才响应
+- **结果文件留在插件缓存**：`cache/synth/`，只保留最近 3 个。要长期留存，
+  用宿主试听区旁边的「保存」
+
+## 许可
+
+- 插件代码、JNI、文档：[MIT](LICENSE) —— `Copyright (c) 2026 visitor257`
+- 推理引擎 `llama.cpp-omni` / `ggml`：**MIT**，版权归 ggml authors，
+  全文与归属见 [NOTICE.md](plugins/voxcpm2/NOTICE.md)
+- VoxCPM2 权重：**Apache-2.0**，由用户自行下载，随权重走，不受本仓库许可影响
+
+MIT 允许商用、修改、闭源分发，条件是**保留版权声明和许可全文**。
+所以这个插件把 `NOTICE.md` 一起打进了仓库，界面里也有一节写给用户看的许可说明。
+
+> 另外两条与开源协议无关、但同样要守的：
+> **声音权益**（《民法典》1023 条，自然人声音参照肖像权保护）——
+> 拿真人音频做克隆要先取得同意；
+> **深度合成标识**（《互联网信息服务深度合成管理规定》）——
+> 对外发布生成的音频时要可识别。
+> 自己录自己用、离线自己听，不涉及这些。
 
 ## 目录
 
 ```
-Ponko-EX/
+Ponko-EX/                           这条分支就是本项目
 ├── README.md / README.en.md        本文件（中 / 英）
-├── doc/
-│   ├── plugin-guide.md             插件开发手册
-│   └── plugin-guide.en.md          同上（英）
-├── log/
-│   ├── README.md                   这个文件夹是什么
-│   └── 2026-10-21-*.md             开发过程中的问题记录（中文，不正式）
-├── settings.gradle.kts             本地 maven 仓库指向插件 SDK
-├── build.gradle.kts                KGP 版本必须与宿主一致
-├── gradle.properties
-├── tools/build.bat                 纯 ASCII；载入 MSVC 环境后**就地构建**
-├── tools/push-via-api.py           git push 不通时用 REST API 推送
-└── plugins/                        只有插件线才有
-    ├── echo/                       Ponko-EX_test 线
-    └── voxcpm2/                    Ponko-EX_VoxCPM2 线（含 NOTICE.md，许可要点）
+├── LICENSE                         MIT
+├── doc/                            插件开发手册（快照，最新在 main 线）
+├── log/                            这条线踩过的坑
+├── tools/build.bat                 构建脚本（载入 MSVC 环境后就地编）
+└── plugins/voxcpm2/
+    ├── build.gradle.kts            包名 / minSdk / arm64 过滤
+    ├── NOTICE.md                   第三方许可与归属（分发前必读）
+    └── src/main/
+        ├── AndroidManifest.xml     只有服务与激活组件，**没有启动图标**
+        ├── jniLibs/arm64-v8a/      libvoxcpm2jni.so（预编译）
+        ├── res/                    图标 + 字符串
+        └── java/com/litertchat/plugin/voxcpm2/
+            ├── VoxCpm2Activator.kt      宿主「启用插件」时打开的那个页面
+            ├── VoxCpm2PluginService.kt  服务本体：加载、合成、设置界面、下载
+            ├── VoxCpm2Bridge.kt         JNI 声明（10 个 native 方法）
+            ├── ModelStore.kt            权重清单 + 断点续传
+            └── AudioUtil.kt             参考音频解码 → 16 kHz 单声道 WAV
 ```
 
-## 文档在哪
-
-| 想知道 | 看 |
-|---|---|
-| 怎么写一个插件、接口长什么样、UI 配置怎么给 | [`doc/plugin-guide.md`](doc/plugin-guide.md) |
-| 为什么某个东西是这么设计的、踩过哪些坑 | [`log/`](log/) |
-
-手册是**怎么用**，`log/` 是**为什么**。遇到"照着写却跑不通"的情况，
-先翻 `log/` —— 大概率有人踩过了。
-
-## 前置：先发布插件 SDK
-
-插件依赖 `com.litertchat.ponko:plugin-sdk` 的 AAR，它由**宿主**发布到本地 maven 仓库：
-
-```bat
-:: 在宿主的构建沙箱里跑
-tools\build-android.bat :ponko-plugin-sdk:publishReleasePublicationToLocalRepoRepository
-```
-
-产物落在本地 maven 仓库（路径见 `settings.gradle.kts` 里的 `maven { url = ... }`）。
-
-> ⚠ **AIDL 或 Parcelable 一改就必须重新发布**，否则这边编出来的插件用的还是旧接口。
-> 症状是运行时 `NoSuchMethodError`，或者 Parcel 读写错位读出乱值 —— 很难查。
->
-> 反过来也一样：**只重编宿主不重编插件是没用的**，插件消费的是 maven 里那份 AAR。
-
-## 构建
-
-工程路径是纯 ASCII，AGP 直接接受，所以**就地构建**，不需要同步到沙箱。
-
-```bat
-tools\build.bat :plugins:echo:assembleRelease
-```
-
-产物：`plugins\echo\build\outputs\apk\release\echo-release-unsigned.apk`
-
-`tools\build.bat` 里面做了三件事，缺一个都编不出来：
-
-1. 载入 MSVC 环境（`vcvars64.bat`）—— 没有它 CMake 找不到 build program
-2. 指定 JDK 17 / Android SDK
-3. 调 gradle，带 `--no-daemon`
-
-**别用 `gradlew`**：本机 wrapper 的 dists 是空的，跑起来只会卡住或报错。
-
-> ⚠ `.bat` 必须**纯 ASCII**。cmd.exe 按 GBK 解析 .bat，中文注释会被拆行、
-> 打断 if 块，历史上真出现过脚本自己刷自己 22 MB 日志。
-
-## 签名（关键）
-
-宿主用 `protectionLevel="signature"` 的权限保护插件绑定，
-**插件必须用同一把密钥签名**，否则 `bindService` 直接抛 `SecurityException`。
-
-用宿主项目里的签名脚本（它固定 v1 + v2 + v3 三方案全开）：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File <宿主>\tools\sign-apk.ps1 `
-  -Apk <unsigned.apk> -Out <signed.apk>
-```
-
-密钥和口令都**不进仓库**：`.gitignore` 已经挡住 `*.jks` / `*.keystore` /
-`keystore.properties`。脚本从 `keystore.properties` 或环境变量读口令。
-
-验证签名：
-
-```bat
-apksigner verify --verbose --min-sdk-version 23 <apk>
-:: v1 / v2 / v3 三项都应为 true
-```
-
-## 许可
-
-[MIT](LICENSE) —— 代码、文档、示例插件都在这个许可下。
-
-```text
-Copyright (c) 2026 visitor257
-```
-
-也就是说：你可以拿去用、改、商用、闭源分发，只要保留版权声明。
-**不提供任何担保** —— 插件跑在你的设备上、调你的模型，后果自负。
-
-> 宿主 Ponko 用的是同一条许可，但两个仓库各自独立：宿主的 `LICENSE`
-> 不覆盖这里的文件，反之亦然。
+`doc/` 和 `log/` 是**开发这个插件时**用得到的背景，不是插件运行的一部分。
