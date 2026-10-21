@@ -155,7 +155,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.2.0",
+        versionName = "0.2.1",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -236,7 +236,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     }
 
     override fun closeEngineBlocking() {
-        // 幂等：宿主停用插件、页面销毁、进程回收都会调
+        // 幂等：用户点「卸载引擎」、停用插件、页面销毁、进程回收都会调
         val wasReady = nativeReady
         runCatching { VoxCpm2Bridge.nativeFree() }
             .onFailure { Log.w(TAG, "nativeFree 失败", it) }
@@ -246,6 +246,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (wasReady) {
             refreshDeviceStats()
             logLine("引擎已释放 · 内存回到 ${gb(devMemAvail)} 可用")
+            // 宿主只负责把自己的「卸载引擎」按钮改回「加载引擎」，
+            // **不会重画插件页** —— 不喊这一声，「引擎」那行会一直写着"已就绪"。
+            notifySchemaChanged()
         }
     }
 
@@ -486,7 +489,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(key = "sec_state", type = UiType.SECTION, label = "运行状态")
         items += UiItem(
             key = "st_engine", type = UiType.STATUS, label = "引擎",
-            value = if (nativeReady) "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程" else "未加载",
+            value = when {
+                nativeReady -> "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程"
+                // 宿主从 2.0.0 起不再替所有插件自动加载（见插件文档 §6.1）：
+                // 这个插件不声明 AUTOLOAD_ENGINE，所以"未加载"是正常起点，不是故障
+                ready -> "未加载 · 点上面「加载引擎」，或直接点「试听」"
+                else -> "未加载 · 先下载权重"
+            },
         )
         items += UiItem(
             key = "st_weights", type = UiType.STATUS, label = "权重",
@@ -623,7 +632,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 "单声道，超过 64 MB 会拒绝。\n\n" +
                 "三种模式：普通合成（可在文本前用括号写音色描述）、声音克隆（只给参考音频）、" +
                 "极致克隆（参考音频 + 逐字稿，最像）。\n\n" +
-                "首次加载引擎约 10~30 秒，之后一直留着；在卡片上停用插件才会释放。",
+                "首次加载引擎约 10~30 秒，加载后一直留着（重复点只会立刻返回）。" +
+                "想腾内存点上面「卸载引擎」，或在卡片上停用插件。",
         )
         items += UiItem(
             key = "license", type = UiType.INFO,
@@ -660,7 +670,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val next = when {
             downloading -> "正在下载权重（${"%.0f".format(dlPercent)}%），下完就能合成。"
             ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「试听」。"
-            ready -> "权重已就绪。点上面「试听」会自动加载引擎（约 10~30 秒）。"
+            ready -> "权重已就绪，引擎还没加载。点上面「加载引擎」（约 10~30 秒），" +
+                "或者直接点「试听」—— 它会自己先加载再合成。"
             installed > 0 -> "权重还没下完（已有 ${ModelStore.human(installed)}）。" +
                 "到下面「1 · 权重」点「继续下载」。"
             else -> "还没下载权重。到下面「1 · 权重」下载（约 3.5 GB），下完才能合成。"
@@ -824,7 +835,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     dlCancel.get() -> "已取消，下次继续会从断点续传"
                     failed != null -> "下载失败：$failed"
                     ModelStore.isSourceReady(this, src) -> "下载完成（${ModelStore.human(src.totalBytes)}）。" +
-                        "返回上一页再进来，或直接点试听，引擎会自动加载。"
+                        "现在可以点上面「加载引擎」，或者直接点「试听」（会先加载再合成）。"
                     else -> "下载中断，再点一次「继续下载」可以接着下"
                 }
                 refreshDeviceStats()
