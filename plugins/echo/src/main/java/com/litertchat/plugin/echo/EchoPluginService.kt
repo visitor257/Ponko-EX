@@ -66,9 +66,17 @@ class EchoPluginService : PonkoPluginService() {
         // 不是真的语音 —— 标成 TTS 会让宿主的「朗读回答」路由选到它，
         // 用户会听到一段莫名其妙的音调。
         //
-        // 标成 TEST 之后：宿主仍会自动加载引擎、仍允许在插件界面里试听，
+        // 标成 TEST 之后：宿主仍允许在插件界面里试听（那是诊断动作），
         // 但不会把它当成正式的朗读引擎。
-        capabilities = listOf(Capability.TEST),
+        //
+        // **AUTOLOAD_ENGINE**：允许宿主在连上时就加载引擎。
+        //
+        // 这是"加载时机"的声明，和"能做什么"是两回事，所以单独一个常量。
+        // 该不该声明取决于加载有多贵：
+        // · Echo 的 loadEngineBlocking 只是 sleep 800ms，零内存 → 声明，装上就能试听
+        // · 真模型（几 GB、几十秒）→ **不要声明**，让用户自己点「加载引擎」，
+        //   否则用户只是切到插件页看一眼连接状态，后台就开始灌几个 G
+        capabilities = listOf(Capability.TEST, Capability.AUTOLOAD_ENGINE),
         modelFamilies = emptyList(),
         // 自管模型（这里根本没有模型），不需要宿主传文件
         needsHostModels = false,
