@@ -306,17 +306,64 @@ class MyPluginService : PonkoPluginService() {
 | `TTS` | text → audio | Selected by the "speak the answer" route |
 | `ASR` | audio → text | reserved |
 | `IMG` | image generation | reserved |
-| `TEST` | test / sample plugin | Excluded from speech routing, but still gets its engine loaded and can still be previewed |
+| `TEST` | test / sample plugin | Excluded from speech routing, but can still be previewed. **Whether the engine loads on connect is decided separately by `AUTOLOAD_ENGINE`** |
 
 **Sample plugins must declare `TEST`, never `TTS`.** They emit fixed tones, not
 speech; declaring `TTS` means the host will pick them for real read-aloud and the
 user hears an inexplicable arpeggio.
 
-### 6.1 `config.threads` now arrives with a real value
+### 6.1 `AUTOLOAD_ENGINE`: load timing is your call
+
+**Nothing loads automatically by default.** The engine is loaded when the user taps
+"Load engine" or "Preview".
+
+That default is deliberate, because the cost of loading differs by orders of
+magnitude:
+
+| Plugin type | Load time | Memory |
+|---|---|---|
+| Toy / pure algorithm (Echo) | under a second | 0 |
+| Real model (VoxCPM2) | tens of seconds to a minute | several GB |
+
+The host **cannot guess** which one you are. It used to call `loadEngine`
+unconditionally on connect, which meant "user switches to the plugin tab to glance
+at the connection state, and several GB start pouring in" — an action they never
+requested and cannot decline short of not opening the page. It also evicts the
+host's own chat / drawing models and can trigger OOM.
+
+So:
+
+```kotlin
+capabilities = listOf(Capability.TTS, Capability.AUTOLOAD_ENGINE)  // load on connect
+capabilities = listOf(Capability.TTS)                              // user loads it (recommended for real models)
+```
+
+**When to declare it:**
+
+- Loading is essentially free (tens of milliseconds, no memory) → declare it. The
+  plugin works the moment it's enabled, minus one tap
+- Loading takes seconds, or hundreds of MB → **don't**. Let the user decide when to
+  pay that
+
+The UI differs between the two:
+
+| | Declared | Not declared |
+|---|---|---|
+| After connecting | starts loading right away | does nothing; a "Load engine" button appears |
+| User taps "Preview" | synthesises directly | loads first, then synthesises (no manual tap needed) |
+
+In other words **not declaring doesn't make the plugin unusable** — it just hands
+the "when do I pay" decision back to the user.
+
+> ⚠ Don't declare it just to feel faster. Being slow isn't the problem; spending the
+> user's memory without asking is. This matches the host's own model page, where
+> loading is also a manual button.
+
+### 6.2 `config.threads` now arrives with a real value
 
 The plugin page has a "inference threads" setting, and **the host passes it down
-when it binds the plugin**. The default is `cores - 1`, clamped to 1–6; the user
-can pick auto / 2 / 4 / 6.
+when it binds the plugin and loads the engine**. The default is `cores - 1`,
+clamped to 1–6; the user can pick auto / 2 / 4 / 6.
 
 So `loadEngineBlocking` should **prefer `config.threads`**, falling back to your own
 default only when it is `<= 0`:
@@ -350,14 +397,15 @@ UNLOADED ──loadEngine──► LOADING ──ok──► READY ──synthes
 
 Three rules:
 
-1. **`loadEngine` is idempotent.** The host calls it when the connection comes up,
-   and again if a preview is requested while the engine isn't ready. Repeat calls
-   are free.
+1. **`loadEngine` is idempotent.** When it's called is decided by §6.1: plugins that
+   declare `AUTOLOAD_ENGINE` get one call on connect; others wait for the user to tap
+   "Load engine" or "Preview". Repeat calls are free.
 2. **After a job the state returns to `READY`, not `UNLOADED`** — unless the engine
    genuinely failed to load. (An early version keyed off "model size > 0", so a
    model-less plugin was marked unloaded right after its first synthesis and the
    second preview reported "engine not loaded". See `log/`.)
-3. **`closeEngine` must be idempotent.** The host calls it on disable, on page
+3. **`closeEngine` must be idempotent.** The host calls it when the user taps
+   "Unload engine", on disable, on page
    destroy, and when the process is reclaimed.
 
 `modelBytes` is **display-only** and plays no part in state transitions. Filling 0
@@ -724,6 +772,9 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] **"Stop" mid-generation ends it promptly** (check points are dense enough, host buttons reset)
 - [ ] Clone mode with a picked reference audio actually produces output (host sends an FD; plugin decodes to 16 kHz)
 - [ ] After changing "inference threads", restart the plugin and confirm `config.threads` is honoured
+- [ ] `AUTOLOAD_ENGINE` is declared correctly (real models must **not** declare it, or
+      merely opening the plugin tab pours several GB in)
+- [ ] If not declared: the "Load engine" button appears, loads, unloads, and its label follows the state
 - [ ] Disabling actually frees the plugin's model memory
 - [ ] If AIDL changed: SDK republished and plugin rebuilt
 - [ ] Identify builds by **sha256**, not byte size (adjacent builds can be byte-identical)
