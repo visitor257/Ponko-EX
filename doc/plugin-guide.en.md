@@ -411,6 +411,30 @@ Three rules:
 `modelBytes` is **display-only** and plays no part in state transitions. Filling 0
 for a model-less plugin is perfectly normal.
 
+### There is no "unloaded" callback
+
+`IPonkoCallback` has `onEngineLoaded` / `onEngineError` — both outcomes of loading —
+but **no `onEngineUnloaded`**. So the host can only poll `getStatus().state` to know
+whether unloading has finished.
+
+What that means for you:
+
+- Don't rely on the host announcing anything inside `closeEngineBlocking()` — just free
+  synchronously and return
+- To make it feel fast, **return early**. The host polls until `UNLOADED`, so the longer
+  `closeEngineBlocking` blocks, the longer the user stares at "unloading…"
+- If you're mid-inference when it's called, the SDK sets the cancel flag and you must
+  check `throwIfCancelled()` in your loop. Sparse checks make unloading slow — the host
+  just sits there waiting
+- A `synthesize` arriving during the unload window now gets **`NOT_READY`** (not `BUSY`),
+  because nothing is actually generating; "the previous clip is still being generated"
+  would be a lie
+
+> An earlier SDK returned `BUSY` in that window, so a user who unloaded and then tapped
+> preview saw "the previous clip is still being generated, please wait". **Fixed** (the
+> SDK now has a separate `closing` flag). The fix needs the AAR republished and plugins
+> rebuilt to take effect.
+
 ---
 
 ## 8. Performing a synthesis
@@ -602,6 +626,26 @@ override fun onSettingChanged(key: String, value: String) { /* persist */ }
 override fun onActionInvoked(key: String) { /* work, then notifySchemaChanged() */ }
 ```
 
+### Text formatting: a very small subset
+
+`intro` and `INFO` bodies support **two** inline formats:
+
+| Syntax | Result |
+|---|---|
+| `**bold**` | bold |
+| `` `monospace` `` | monospace |
+
+**Everything else is shown verbatim** — `#` headings, `- ` lists, `[links](url)` and
+tables are not parsed; the symbols appear on screen. `label` / `help` / `value` are
+**not parsed at all**, plain text only.
+
+> ⚠ This used to be inconsistent: the guide claimed bold and code were supported while
+> the host merely did `text = t`, so plugins that followed the guide rendered literal
+> asterisks. **Only since Ponko 2.0.0 is it actually true**, and only for the two
+> formats above.
+>
+> Write your copy assuming bold and code are all you get — don't count on lists or headings.
+
 ### The 12 widget types
 
 | Type | Purpose | Key fields |
@@ -647,6 +691,27 @@ Rule of thumb: **the plugin owns "what's possible" (capabilities), the host owns
 "how it's triggered" (buttons).** "Preview" means the host starts a synthesis and
 plays the result, so the button is host-painted — but it's a *function*, so it lives
 in the plugin form rather than on the card.
+
+### Which buttons an audio plugin gets (worth knowing)
+
+Declaring `TTS` or `TEST` puts these **host-painted** buttons at the top of the plugin
+form. They aren't defined by the plugin and their labels can't be changed, but knowing
+they exist saves you from designing them twice:
+
+| Button | When present | What happens |
+|---|---|---|
+| Load engine / Unload engine | only when `AUTOLOAD_ENGINE` is **not** declared | host calls `loadEngine` / `closeEngine` |
+| Preview → Re-synthesise | always | host sends a `synthesize` then plays it. **Renamed once output exists**, because at that point it means "run inference again" |
+| Play | **after output exists** | replays the existing file, **no inference** |
+| Stop | enabled during synthesis | host calls `cancel()`; you answer `CANCELLED` |
+| Save | after output exists | copies the audio into the system Music/Ponko library |
+
+So: **don't add your own "preview" or "play" button to `UiSchema`** — the host already
+handles both. Spend the form on what's genuinely yours (model choice, voice,
+parameters, downloads).
+
+> "Play" and "Re-synthesise" are different things. Listening again is a **frequent**
+> action, and re-synthesising on a phone costs 1–2 minutes.
 
 ---
 
@@ -775,6 +840,12 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] `AUTOLOAD_ENGINE` is declared correctly (real models must **not** declare it, or
       merely opening the plugin tab pours several GB in)
 - [ ] If not declared: the "Load engine" button appears, loads, unloads, and its label follows the state
+- [ ] "Unload engine" resets the button afterwards (it does not stay on "Unload", with a
+      second tap loading the model back in)
+- [ ] Preview immediately after unloading does not report "the previous clip is still
+      being generated"
+- [ ] Once output exists, "Play" replays without re-running inference
+- [ ] `intro` / `label` / `help` are written as plain text, no markdown lists or headings
 - [ ] Disabling actually frees the plugin's model memory
 - [ ] If AIDL changed: SDK republished and plugin rebuilt
 - [ ] Identify builds by **sha256**, not byte size (adjacent builds can be byte-identical)
