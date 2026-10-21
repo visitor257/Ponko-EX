@@ -30,13 +30,27 @@ No server, no API key, no telemetry. It works in airplane mode.
 1. Install `Ponko-EX_VoxCPM2_release.apk`
 2. Open Ponko → **Plugins** → enable **VoxCPM2**
 3. On the plugin page, under **1 · Weights**, tap **Download all weights** (3.55 GB, resumable, **use Wi-Fi**)
-4. Tap **Load engine** at the top of the page (3.5 GB takes roughly 10–30 s); once the status reads *ready*, preview it
+4. Tap **Load model** at the top of the page (3.5 GB takes roughly 10–30 s); once the status reads *ready*, synthesise
 
 > Loading is **a tap you make yourself**. Since 2.0.0 the host no longer loads every
 > plugin's engine on connect — only lightweight plugins that declare `AUTOLOAD_ENGINE`
 > are loaded automatically. This one needs 3.5 GB, so it deliberately does not declare it.
-> Tapping **Preview** works too (it loads first, then synthesises), you just don't get a
-> load-progress view. Tap **Unload engine** whenever you want the memory back.
+> Tapping **Synthesise** works too (it loads first, then synthesises), you just don't get a
+> load-progress view. Tap **Release model** whenever you want the memory back.
+
+> The action row reads `Load/Release model · Synthesise (becomes "Synthesise again" once
+> there is output) · Replay · Stop · Save`. **Replay only plays the last file — it does not
+> re-run inference.** Five seconds of speech takes 1–2 minutes on a phone, so do not reach
+> for "Synthesise again" just to hear the same line.
+>
+> The plugin names those buttons (SDK v3 `buildActionLabels()`). The host's defaults are
+> *Load engine / Unload engine / Preview / Re-synthesise / Play / Stop / Save*; this plugin
+> uses more specific words — it loads a model, not an engine; unloading leaves the file on
+> disk (hence "release"); and "preview" actually runs a full inference (hence "synthesise").
+
+> **Update the host first.** This build reports SDK v3 (the button-label capability).
+> An older host (`API_MAX_SUPPORTED = 2`) refuses to bind and shows
+> "plugin SDK v3 incompatible" — it does not fall back to default labels.
 
 > **The signature must match the host.** Ponko protects plugin binding with a
 > `signature`-level permission, so a mismatched key makes `bindService` throw
@@ -159,9 +173,9 @@ To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxC
 - **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
 - **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
 - **One download source** — ModelScope only, no hf-mirror fallback
-- **There is no "replay"** — the host offers a single *Preview* action, which means
-  "synthesise once, then play". There is no button to replay the last result, so hearing
-  the same line again costs another full inference (minutes). Tap *Save* to keep the audio
+- **Replay keeps only the latest file** — the host stores "the last thing that was
+  synthesised", so synthesising again replaces it, and *Replay* greys out for other plugins.
+  Tap *Save* for anything worth keeping (it lands in `Music/Ponko`)
 - **Long text is slow** — there is no hard character cap (the plugin never truncates), but
   phone RTF is 10–30, so 40 characters is already minutes
 - **Cancellation is not instantaneous** — the native side checks between audio chunks; if it

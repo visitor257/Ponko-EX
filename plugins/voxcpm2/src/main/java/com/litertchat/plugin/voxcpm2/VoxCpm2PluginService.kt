@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
+import com.litertchat.plugin.ActionLabel
 import com.litertchat.plugin.Capability
 import com.litertchat.plugin.EngineConfig
 import com.litertchat.plugin.EngineInfo
@@ -52,7 +53,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     // ---- 引擎状态：全部是 volatile，因为 getSettingsSchema() 跑在宿主 Binder 线程上 ----
     @Volatile private var nativeReady = false
-    /** 「卸载引擎」点下去之后、原生真的 free 完之前的短暂状态 */
+    /** 「释放模型」点下去之后、原生真的 free 完之前的短暂状态 */
     @Volatile private var engineUnloading = false
     @Volatile private var sampleRate = 48_000
     @Volatile private var loadedBytes = 0L
@@ -157,7 +158,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.2.2",
+        versionName = "0.2.3",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -229,7 +230,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             "引擎就绪：${chosen.key} · ${ModelStore.human(loadedBytes)} · $threads 线程 · " +
                 "${sampleRate / 1000} kHz · 加载 ${SystemClock.elapsedRealtime() - t0} ms"
         )
-        // 「引擎」那行立刻从"未加载"变成"已就绪"，不然用户点完试听还得退出再进来
+        // 「引擎」那行立刻从"未加载"变成"已就绪"，不然用户点完「合成语音」还得退出再进来
         notifySchemaChanged()
         return EngineInfo(
             sampleRate = sampleRate,
@@ -240,11 +241,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
     }
 
     override fun closeEngineBlocking() {
-        // 幂等：用户点「卸载引擎」、停用插件、页面销毁、进程回收都会调
+        // 幂等：用户点「释放模型」、停用插件、页面销毁、进程回收都会调
         val wasReady = nativeReady
         engineUnloading = wasReady
         // 先让界面从"已就绪"切到"正在释放"。否则卸载的几百毫秒里，
-        // 宿主功能区在说"正在卸载引擎"，插件页却已经写"未加载 · 点加载"—— 自相矛盾
+        // 宿主功能区在说"正在释放模型"，插件页却已经写"未加载 · 点加载"—— 自相矛盾
         if (wasReady) notifySchemaChanged()
 
         runCatching { VoxCpm2Bridge.nativeFree() }
@@ -256,11 +257,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (wasReady) {
             refreshDeviceStats()
             logLine("引擎已释放 · 内存回到 ${gb(devMemAvail)} 可用")
-            // ⚠ 不能在这里通知完事：SDK 是在 closeEngineBlocking **返回之后**
-            // 才把 state 设成 UNLOADED 的。立即通知的话，宿主那唯一一次 250 ms
-            // 抽查读到的还是 READY，按钮就停在「卸载引擎」—— 用户再点一下，
-            // 走的是 engineReady()==false 的分支，其实是"加载"。
-            // 延迟一会儿再喊，让宿主重画时读到的已经是卸载后的状态。
+            // 延迟一会儿再喊一声，把「正在释放内存…」换成「未加载」。
+            //
+            // ⚠ 这一声只是给**插件页自己**用的。宿主从 2.0.0（2026-10-22 那批）
+            // 起会自己轮询 `getStatus().state` 直到 UNLOADED，不再看这个通知来
+            // 复位按钮 —— 以前它只做一次 250 ms 抽查，靠这里补，现在不用了。
+            // 之所以还要延迟：SDK 是在 closeEngineBlocking **返回之后**才把
+            // state 设成 UNLOADED 的，立刻通知的话宿主读到的状态还是旧的。
             Thread({
                 try {
                     Thread.sleep(UNLOAD_SETTLE_MS)
@@ -486,10 +489,36 @@ class VoxCpm2PluginService : PonkoPluginService() {
     // ======================================================== 界面
 
     /**
+     * 功能区那几个按钮叫什么（SDK v3 起可改，只改文字）。
+     *
+     * 宿主默认是「加载引擎 / 卸载引擎 / 试听 / 重新合成 / 播放 / 停止 / 保存」——
+     * 那套词是按"有个引擎要加载"写的，放到这个插件上有两处不贴：
+     *
+     * - 这里加载的是 **3.5 GB 的模型**，说「模型」比「引擎」具体；卸载之后
+     *   东西还在磁盘上，说「释放模型」比「卸载」准确（宿主的「卸载」很容易被
+     *   理解成卸载插件）。
+     * - 「试听」听起来只是放声音，实际是**跑一遍推理**（1~2 分钟）。改成
+     *   「合成语音」，再加上有产物后变成「再合成一次」，就不会有人以为点它
+     *   只是重放 —— 重放是另一个按钮「重放」。
+     *
+     * 停止 / 保存用宿主默认：本来就是这两个词。
+     *
+     * ⚠ 长度上限 [ActionLabel.MAX_LEN]（12 字符，超了整个丢弃）；这个方法在
+     * 打开界面时于 Binder 线程调用，所以只能是常量 map，不能做 IO。
+     */
+    override fun buildActionLabels(): Map<String, String> = mapOf(
+        ActionLabel.ENGINE_LOAD to "加载模型",
+        ActionLabel.ENGINE_UNLOAD to "释放模型",
+        ActionLabel.PREVIEW to "合成语音",
+        ActionLabel.PREVIEW_AGAIN to "再合成一次",
+        ActionLabel.PLAY to "重放",
+    )
+
+    /**
      * 宿主渲染的插件页。
      *
      * 和独立的测试 App 取向不同：那一版是"操作台"，把所有旋钮摊在一屏；
-     * 这一版是"状态 + 缺什么补什么"—— 真正的操作（文本、模式、参考音频、试听）
+     * 这一版是"状态 + 缺什么补什么"—— 真正的操作（文本、模式、参考音频、合成）
      * 由宿主在页面顶部的「功能」区提供，插件不重复摆一遍。
      *
      * 分区顺序按**使用顺序**排，不按重要性：
@@ -515,7 +544,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 nativeReady -> "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程"
                 // 宿主从 2.0.0 起不再替所有插件自动加载（见插件文档 §6.1）：
                 // 这个插件不声明 AUTOLOAD_ENGINE，所以"未加载"是正常起点，不是故障
-                ready -> "未加载 · 点上面「加载引擎」，或直接点「试听」"
+                ready -> "未加载 · 点上面「加载模型」，或直接点「合成语音」"
                 else -> "未加载 · 先下载权重"
             },
         )
@@ -551,7 +580,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         items += UiItem(
             key = "source", type = UiType.CHOICE, label = "下载源",
-            help = if (ready) "当前源已就绪，可以直接试听" else src.note,
+            help = if (ready) "当前源已就绪，可以直接合成" else src.note,
             value = src.key,
             options = ModelStore.SOURCES.map {
                 UiOption(it.key, "${ModelStore.human(it.totalBytes)} · ${sourceShort(it.key)}")
@@ -650,14 +679,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(key = "sec_doc", type = UiType.SECTION, label = "说明")
         items += UiItem(
             key = "help", type = UiType.INFO,
-            label = "参考音频要 5~10 秒、单一说话人、尽量干净；任意格式都行，插件自己解码成 16 kHz " +
+            label = "**手机纯 CPU 推理，很慢**：5 秒语音约 1~2 分钟，生成中点「停止」可以打断。\n\n" +
+                "参考音频要 5~10 秒、单一说话人、尽量干净；任意格式都行，插件自己解码成 16 kHz " +
                 "单声道，超过 64 MB 会拒绝。\n\n" +
                 "三种模式：普通合成（可在文本前用括号写音色描述）、声音克隆（只给参考音频）、" +
                 "极致克隆（参考音频 + 逐字稿，最像）。\n\n" +
-                "首次加载引擎约 10~30 秒，加载后一直留着（重复点只会立刻返回）。" +
-                "想腾内存点上面「卸载引擎」，或在卡片上停用插件。\n\n" +
-                "注意：每次点「试听」都会重新推理一遍 —— 宿主不缓存上一次的结果，" +
-                "想再听同一段就要再等一次。要留住音频，合成完点「保存」。",
+                "首次「加载模型」约 10~30 秒，之后一直留着（重复点只会立刻返回）。" +
+                "想腾内存点「释放模型」，或在卡片上停用插件。\n\n" +
+                "「合成语音」= 跑一遍推理；合成过一次之后它会变成「再合成一次」。" +
+                "只想再听一遍就点「重放」—— 那才是直接放上一次的文件，不重新推理。",
         )
         items += UiItem(
             key = "license", type = UiType.INFO,
@@ -693,15 +723,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
     private fun buildIntro(ready: Boolean, installed: Long): String {
         val next = when {
             downloading -> "正在下载权重（${"%.0f".format(dlPercent)}%），下完就能合成。"
-            ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「试听」。"
-            ready -> "权重已就绪，引擎还没加载。点上面「加载引擎」（约 10~30 秒），" +
-                "或者直接点「试听」—— 它会自己先加载再合成。"
+            ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「合成语音」。"
+            ready -> "权重已就绪，模型还没加载。点上面「加载模型」（约 10~30 秒），" +
+                "或者直接点「合成语音」—— 它会自己先加载再合成。"
             installed > 0 -> "权重还没下完（已有 ${ModelStore.human(installed)}）。" +
                 "到下面「1 · 权重」点「继续下载」。"
             else -> "还没下载权重。到下面「1 · 权重」下载（约 3.5 GB），下完才能合成。"
         }
         return "VoxCPM2（OpenBMB，2B）本地语音合成：30 种语言、9 种中文方言，" +
-            "音色设计与零样本克隆，48 kHz，除下载权重外全程离线。\n\n$next"
+            "音色设计与零样本克隆，48 kHz，除下载权重外全程离线。\n\n**$next**"
     }
 
     private fun sourceShort(key: String): String = when (key) {
@@ -859,7 +889,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     dlCancel.get() -> "已取消，下次继续会从断点续传"
                     failed != null -> "下载失败：$failed"
                     ModelStore.isSourceReady(this, src) -> "下载完成（${ModelStore.human(src.totalBytes)}）。" +
-                        "现在可以点上面「加载引擎」，或者直接点「试听」（会先加载再合成）。"
+                        "现在可以点上面「加载模型」，或者直接点「合成语音」（会先加载再合成）。"
                     else -> "下载中断，再点一次「继续下载」可以接着下"
                 }
                 refreshDeviceStats()
@@ -895,9 +925,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
         /**
          * 卸载后延迟多久再通知界面重画。
          *
-         * SDK 在 [closeEngineBlocking] 返回之后才把 state 设成 UNLOADED，
-         * 而宿主只在点完卸载的 250 ms 后抽查一次 `isEngineReady()`。
-         * 通知得太早，宿主读到的仍是 READY，按钮就卡在「卸载引擎」上。
+         * SDK 在 [closeEngineBlocking] 返回之后才把 state 设成 UNLOADED。
+         * 这一声只影响插件页自己那行「引擎」（从"正在释放"切到"未加载"）：
+         * 宿主那边已经改成自己轮询 `getStatus().state`，不看这个通知。
          */
         private const val UNLOAD_SETTLE_MS = 600L
     }
