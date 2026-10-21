@@ -31,10 +31,12 @@
     python tools/push-via-api.py --apply --create-repo   # 仓库不存在时顺便创建
 
 环境变量：
-    GH_TOKEN       未设置时从 GH_TOKEN_FILE 读
-    GH_TOKEN_FILE  默认 ~/Desktop/git_repo_tok.txt
+    GH_TOKEN       直接给 token，优先级最高
+    GH_TOKEN_FILE  从文件读；默认 ~/.ponko_gh_token
     GH_REPO        默认 visitor257/Ponko-EX
     GH_BRANCHES    默认 main,Ponko-EX_test
+
+token 只放在本机、绝不入库（`.gitignore` 也挡了常见密钥文件名）。
 """
 
 import base64
@@ -56,8 +58,8 @@ ROOT = os.path.dirname(HERE)
 REPO = os.environ.get("GH_REPO", "visitor257/Ponko-EX")
 BRANCHES = [b.strip() for b in
             os.environ.get("GH_BRANCHES", "main,Ponko-EX_test").split(",") if b.strip()]
-TOKEN_FILE = os.environ.get("GH_TOKEN_FILE",
-                            os.path.join(os.path.expanduser("~"), "Desktop", "git_repo_tok.txt"))
+TOKEN_FILE = os.environ.get(
+    "GH_TOKEN_FILE", os.path.join(os.path.expanduser("~"), ".ponko_gh_token"))
 
 APPLY = "--apply" in sys.argv
 CREATE_REPO = "--create-repo" in sys.argv
@@ -348,6 +350,24 @@ def main():
         if APPLY:
             if parent:
                 print("  远端已有，基于 %s 继续" % parent[:7])
+                # 远端 sha 与本地不同（API 重建的提交），没法直接用 sha 比对。
+                # 但 **tree sha 是内容哈希** —— 找到本地树等于远端树的那个提交，
+                # 它之后的就是真正要推的。
+                #
+                # 不做这一步的后果（踩过）：远端明明已经有这几个提交了，
+                # 脚本还是从第一个开始重推，历史里同一批改动出现两遍。
+                rtree = api("GET", "/repos/%s/git/commits/%s" % (REPO, parent))["tree"]["sha"]
+                upto = None
+                for idx, c in enumerate(commits):
+                    if git("rev-parse", c + "^{tree}").strip() == rtree:
+                        upto = idx
+                if upto is None:
+                    print("   !! 远端树在本地找不到对应提交（远端被人改过？），将全量重推")
+                else:
+                    if upto + 1 < len(commits):
+                        print("  本地 %s 与远端一致，从它的下一个提交开始"
+                              % commits[upto][:7])
+                    commits = commits[upto + 1:]
             elif prev_remote:
                 # 非默认分支：不能再用 bootstrap（Contents API 只会往**默认分支**
                 # 上提交，会污染 main）。改为从上一分支的远端 HEAD 派生一个 ref。

@@ -1,16 +1,17 @@
 @echo off
 REM Ponko-EX build helper - MUST stay pure ASCII.
 REM
-REM A separate project from the host, but it now lives at Desktop\Ponko-EX,
-REM which is a pure ASCII path -> AGP accepts it -> build in place, no sandbox.
-REM (It used to live under WorkBuddy\...\ which contains Chinese characters.)
+REM A separate project from the host. Keep this checkout at a PURE ASCII path:
+REM AGP refuses to build when any parent directory has non-ASCII characters in
+REM its name. If yours is under such a path, copy it to something like C:\PonkoEX
+REM first - but a clean path is better than a sandbox copy.
 REM
 REM Why no Chinese characters in this file:
 REM   cmd.exe parses .bat with the OEM codepage (GBK). A UTF-8 Chinese comment
 REM   gets mangled, breaks if-blocks, and the script can loop forever.
 REM
 REM Prerequisite: the plugin SDK AAR must be published first, from the host project:
-REM   cd C:\PonkoBuild
+REM   cd <host build dir>
 REM   tools\build-android.bat :ponko-plugin-sdk:publishReleasePublicationToLocalRepoRepository
 REM (Any time an AIDL file or a Parcelable changes, republish before building plugins.)
 REM
