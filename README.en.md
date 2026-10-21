@@ -127,4 +127,15 @@ apksigner verify --verbose --min-sdk-version 23 <apk>
 
 ## License
 
-Code is MIT (see the LICENSE in the host repository).
+[MIT](LICENSE) — covers the code, the docs, and the sample plugins.
+
+```text
+Copyright (c) 2026 visitor257
+```
+
+In short: use it, modify it, ship it commercially, keep it closed — just keep the
+copyright notice. There is **no warranty of any kind**; plugins run on your device
+and drive your models, so the consequences are yours.
+
+> The host app (Ponko) uses the same licence, but the two repositories are
+> independent: the host's `LICENSE` does not cover files here, and vice versa.

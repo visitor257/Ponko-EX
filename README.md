@@ -115,4 +115,14 @@ apksigner verify --verbose --min-sdk-version 23 <apk>
 
 ## 许可
 
-代码 MIT（见宿主仓库 LICENSE）。
+[MIT](LICENSE) —— 代码、文档、示例插件都在这个许可下。
+
+```text
+Copyright (c) 2026 visitor257
+```
+
+也就是说：你可以拿去用、改、商用、闭源分发，只要保留版权声明。
+**不提供任何担保** —— 插件跑在你的设备上、调你的模型，后果自负。
+
+> 宿主 Ponko 用的是同一条许可，但两个仓库各自独立：宿主的 `LICENSE`
+> 不覆盖这里的文件，反之亦然。
