@@ -695,8 +695,8 @@ in the plugin form rather than on the card.
 ### Which buttons an audio plugin gets (worth knowing)
 
 Declaring `TTS` or `TEST` puts these **host-painted** buttons at the top of the plugin
-form. They aren't defined by the plugin and their labels can't be changed, but knowing
-they exist saves you from designing them twice:
+form. They aren't defined by the plugin, but **their labels can be overridden**
+(see the next section):
 
 | Button | When present | What happens |
 |---|---|---|
@@ -713,15 +713,76 @@ parameters, downloads).
 > "Play" and "Re-synthesise" are different things. Listening again is a **frequent**
 > action, and re-synthesising on a phone costs 1–2 minutes.
 
+### Renaming the host's buttons (SDK v3 and later)
+
+The default labels are written for "there is an engine to load". If your plugin isn't
+that, override them:
+
+```kotlin
+override fun buildActionLabels(): Map<String, String> = mapOf(
+    ActionLabel.ENGINE_LOAD to "Load model 3.5G",
+    ActionLabel.ENGINE_UNLOAD to "Free model",
+)
+```
+
+**Text only.** Position, count, colour, enabled state and what a tap does all stay with
+the host — a plugin can't create a button, only give its own cell a different name.
+
+#### Available keys
+
+| key | Host default | When shown |
+|---|---|---|
+| `ActionLabel.ENGINE_LOAD` | Load engine | engine not ready |
+| `ActionLabel.ENGINE_UNLOAD` | Unload engine | engine ready (same button, other state) |
+| `ActionLabel.PREVIEW` | Preview | no output yet |
+| `ActionLabel.PREVIEW_AGAIN` | Re-synthesise | output exists (same button) |
+| `ActionLabel.PLAY` | Play | always |
+| `ActionLabel.STOP` | Stop | always |
+| `ActionLabel.SAVE` | Save | always |
+
+**Any key you leave out keeps the host default.** You don't have to override the whole
+set — Echo overrides two and leaves the rest, which doubles as a live check that both
+sources can coexist in the same row.
+
+#### When it's worth overriding
+
+| Your plugin | Suggestion | Why |
+|---|---|---|
+| Local model | `engine.load` → "Load model 3.5G" | the size tells the user how long this takes and what it costs in RAM |
+| Network API | `engine.load/unload` → "Connect / Disconnect" | there is no model; calling it an engine is simply wrong |
+| Model can stay resident | `engine.unload` → "Free memory" | the user cares about RAM, not about the verb "unload" |
+| Toy / test plugin | `preview` → "Run a test" | it doesn't synthesise speech; "Preview" implies auditioning a voice |
+
+#### Hard limits
+
+| Case | Result |
+|---|---|
+| Unknown key | that entry is **dropped**; the rest still apply |
+| Empty value | dropped |
+| Longer than 12 characters | **dropped entirely** (not truncated), falls back to the host default |
+| `buildActionLabels()` throws | everything falls back to defaults; **the plugin stays usable** |
+
+Why over-long values are dropped rather than truncated: "Load model 3.5…" is harder to
+understand than the original default it replaced.
+
+#### What not to do with it
+
+- **Don't make a destructive action sound harmless** (calling "Stop" something like
+  "Save"). Users read the label and tap it, then lose the clip being generated. This is
+  the one abuse I can't catch in code.
+- Don't do slow work here: the method runs on a Binder thread and is called when the
+  form opens.
+
 ---
 
 ## 10. Compatibility: when to bump the version
 
 ```kotlin
-const val API_VERSION = 2         // AIDL surface version; bump only on breaking changes
-const val API_WITH_SCHEMA = 2     // form methods exist from this version on
-const val API_MIN_SUPPORTED = 1   // oldest plugin the host accepts
-const val API_MAX_SUPPORTED = 2   // newest plugin the host accepts
+const val API_VERSION = 3                   // AIDL surface version; any change bumps it
+const val API_WITH_SCHEMA = 2               // form methods exist from this version on
+const val API_WITH_ACTION_LABELS = 3        // button labels overridable from this version on
+const val API_MIN_SUPPORTED = 1             // oldest plugin the host accepts
+const val API_MAX_SUPPORTED = 3             // newest plugin the host accepts
 ```
 
 ### Two kinds of change
@@ -846,6 +907,9 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
       being generated"
 - [ ] Once output exists, "Play" replays without re-running inference
 - [ ] `intro` / `label` / `help` are written as plain text, no markdown lists or headings
+- [ ] Any overridden button label is <= 12 characters, and the keys you did not override
+      still show the host default (not an empty button)
+- [ ] A renamed button still does what its new name says (you did not relabel "Stop")
 - [ ] Disabling actually frees the plugin's model memory
 - [ ] If AIDL changed: SDK republished and plugin rebuilt
 - [ ] Identify builds by **sha256**, not byte size (adjacent builds can be byte-identical)
