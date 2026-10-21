@@ -14,9 +14,11 @@ between them.
 |---|---|---|
 | `main` | This README, `doc/`, `log/`, plus the build skeleton. **No plugin modules.** | The main line. Docs and conventions live here |
 | `Ponko-EX_test` | Everything above + `plugins/echo` (the Echo test plugin) | The test line. Verifies the pipeline, doubles as a template |
+| `Ponko-EX_VoxCPM2` | Everything above + `plugins/voxcpm2` (VoxCPM2 speech synthesis) | The first real plugin line. 4.6 MB APK; weights downloaded at run time |
 
 ```bash
 git checkout Ponko-EX_test     # go to the test line; switch here to build Echo
+git checkout Ponko-EX_VoxCPM2  # go to the VoxCPM2 line (a real plugin)
 git checkout main              # back to the main line, docs only
 ```
 
@@ -44,8 +46,9 @@ Ponko-EX/
 ├── gradle.properties
 ├── tools/build.bat                 pure ASCII; loads the MSVC env, then builds in place
 ├── tools/push-via-api.py           push over the REST API when git push is blocked
-└── plugins/                        present only on the Ponko-EX_test branch
-    └── echo/
+└── plugins/                        only on plugin branches
+    ├── echo/                       on Ponko-EX_test
+    └── voxcpm2/                    on Ponko-EX_VoxCPM2 (see NOTICE.md for licensing)
 ```
 
 ## Where the docs are

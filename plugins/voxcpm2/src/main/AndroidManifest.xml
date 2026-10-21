@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ponko 插件：VoxCPM2 语音合成。
+
+  结构和 plugins/echo 一致（那份文档写得很细，这里只标本插件特有的部分）：
+
+  · 多了 INTERNET 权限 —— 权重不在 APK 里，要在插件内下载
+  · 服务名 / 激活组件换成 VoxCpm2 前缀，其余四项（exported / permission /
+    intent-filter / 无界面 Activity）与 echo 完全相同，缺一个就连不上
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 前台服务 + 唤醒锁：一次合成要跑 1~2 分钟，不保住会被系统杀掉 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 本插件特有：下载 GGUF 权重（约 3.3 GB，支持断点续传） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <queries>
+        <package android:name="com.litertchat.app" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_plugin"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+
+        <!-- 无界面激活组件：清掉系统的 stopped 状态，否则宿主 bind 永远返回 false -->
+        <activity
+            android:name=".VoxCpm2Activator"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="com.litertchat.ponko.ACTIVATOR" />
+            </intent-filter>
+        </activity>
+
+        <!-- 插件主服务：exported 让宿主能 bind；permission 约束调用方必须同签名 -->
+        <service
+            android:name=".VoxCpm2PluginService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse"
+            android:permission="com.litertchat.ponko.permission.BIND_PLUGIN">
+            <intent-filter>
+                <action android:name="com.litertchat.ponko.PLUGIN" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs local VoxCPM2 speech synthesis requested by the Ponko app" />
+        </service>
+    </application>
+
+</manifest>

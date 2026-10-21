@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 插件自己的资源。界面文字不在这里 —— 那些由插件在 UiSchema 里给，宿主直接显示 -->
+<resources>
+    <string name="app_name">Ponko · VoxCPM2</string>
+</resources>

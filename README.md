@@ -13,9 +13,11 @@ Ponko 的插件工程。**与宿主 Ponko 分开的独立工程**，只依赖插
 |---|---|---|
 | `main` | 本 README、`doc/`、`log/` + 构建骨架，**没有任何插件模块** | 主线。文档和约定都住这儿 |
 | `Ponko-EX_test` | 上面全部 + `plugins/echo`（Echo 测试插件） | 测试线。验证链路、当模板 |
+| `Ponko-EX_VoxCPM2` | `main` 全部 + `plugins/voxcpm2`（VoxCPM2 语音合成插件） | 正式插件线。第一条真插件，APK 4.6 MB，权重运行时下载 |
 
 ```bash
 git checkout Ponko-EX_test     # 去测试线，要编 Echo 就切过去
+git checkout Ponko-EX_VoxCPM2  # 去 VoxCPM2 线（正式插件）
 git checkout main              # 回主线，只有文档
 ```
 
@@ -41,8 +43,9 @@ Ponko-EX/
 ├── gradle.properties
 ├── tools/build.bat                 纯 ASCII；载入 MSVC 环境后**就地构建**
 ├── tools/push-via-api.py           git push 不通时用 REST API 推送
-└── plugins/                        只在 Ponko-EX_test 线上存在
-    └── echo/
+└── plugins/                        只有插件线才有
+    ├── echo/                       Ponko-EX_test 线
+    └── voxcpm2/                    Ponko-EX_VoxCPM2 线（含 NOTICE.md，许可要点）
 ```
 
 ## 文档在哪

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  插件图标：自绘的三个同心环（"回声"），不用宿主的立绘 ——
+  美术资源是「保留所有权利」，插件优先用自己生成的图形，避免混用。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#2F6BFF" />
+        </shape>
+    </item>
+    <item
+        android:left="12dp" android:top="12dp" android:right="12dp" android:bottom="12dp">
+        <shape android:shape="oval">
+            <stroke android:width="2dp" android:color="#B9CCFF" />
+            <solid android:color="#00000000" />
+        </shape>
+    </item>
+    <item
+        android:left="22dp" android:top="22dp" android:right="22dp" android:bottom="22dp">
+        <shape android:shape="oval">
+            <solid android:color="#FFFFFF" />
+        </shape>
+    </item>
+</layer-list>

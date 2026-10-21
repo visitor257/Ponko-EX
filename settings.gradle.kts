@@ -44,5 +44,9 @@ rootProject.name = "Ponko-EX"
 // 主线（main）**故意没有 include**。这不是漏写 ——
 // 测试插件在 Ponko-EX_test 线上，那条线自己 include。
 //
+// 这条分支是 Ponko-EX_VoxCPM2：只有 VoxCPM2 插件。
+// 「一条线一个模型家族」—— 两条插件线不要同时 include 同一个 module。
+//
 // 加一条新插件线时：
 //   include(":plugins:<名字>")
+include(":plugins:voxcpm2")
