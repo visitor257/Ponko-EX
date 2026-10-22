@@ -494,7 +494,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             "引擎就绪：${chosen.origin} · ${ModelStore.human(loadedBytes)} · $threads 线程 · " +
                 "${sampleRate / 1000} kHz · 加载 ${SystemClock.elapsedRealtime() - t0} ms"
         )
-        // 「引擎」那行立刻从"未加载"变成"已就绪"，不然用户点完「合成语音」还得退出再进来
+        // 「引擎」那行立刻从"未加载"变成"已就绪"，不然用户点完「开始推理」还得退出再进来
         notifySchemaChanged()
         return EngineInfo(
             sampleRate = sampleRate,
@@ -793,7 +793,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * - 这里加载的是 **3.5 GB 的模型**，说「模型」比「引擎」具体；卸载之后
      *   东西还在磁盘上，说「释放模型」比「卸载」准确（宿主的「卸载」很容易被
      *   理解成卸载插件）。
-     * - 「合成」改成「合成语音」，和上面两个「…模型」排在一起时更成句。
+     * - 「合成」改成「开始推理」：这个按钮**只跑推理、不播放**，音频出来要另外
+     *   点「播放」。叫「合成语音」时用户会等一句声音，等不到就以为坏了；
+     *   「开始推理」既点明了是"开始"一个耗时动作，也不承诺出声。
+     *   文字统一放在 [ACTION_REASONING]，下面的指路文案都引用它。
      *
      * 播放 / 停止 / 保存用宿主默认：「播放」本来就准确。
      *
@@ -812,7 +815,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun buildActionLabels(): Map<String, String> = mapOf(
         ActionLabel.ENGINE_LOAD to "加载模型",
         ActionLabel.ENGINE_UNLOAD to "释放模型",
-        ActionLabel.REASONING to "合成语音",
+        ActionLabel.REASONING to ACTION_REASONING,
     )
 
     /**
@@ -1010,7 +1013,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         // ★ 宿主的功能块就画在这里（SDK v7 的 HOST_SLOT）。
         //
-        // 里面是：加载 / 合成语音 / 播放 / 停止 / 保存 那一排按钮 +
+        // 里面是：加载 / 开始推理 / 播放 / 停止 / 保存 那一排按钮 +
         // 目标文本 / 模式 / 参考音频 / 逐字稿 / 种子 / 线程 / CPU-GPU + 进度提示 + 诊断。
         //
         // 为什么让宿主画、插件不自己摆：那排按钮背后是宿主的状态机
@@ -1117,7 +1120,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (lastAudioSec <= 0.0) {
             items += UiItem(
                 key = "res_empty", type = UiType.INFO,
-                label = "还没有推理结果。\n\n到「参数」页点「合成语音」，" +
+                label = "还没有推理结果。\n\n到「参数」页填好文本、点「$ACTION_REASONING」，" +
                     "这里就会出现这次的种子、参数、文本和播放条。",
             )
         } else {
@@ -1202,10 +1205,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val next = when {
             importingRole.isNotEmpty() -> "正在把选的文件复制进插件目录，别离开这一页。"
             downloading -> "正在下载模型（${"%.0f".format(dlPercent)}%），下完就能合成。"
-            ready && nativeReady -> "引擎已就绪 —— 到「参数」页点「合成语音」，" +
-                "合成完到「结果」页听（合成不会自动出声）。"
+            ready && nativeReady -> "引擎已就绪 —— 到「参数」页在「文本」里填写要念的内容，" +
+                "再点「$ACTION_REASONING」；合成完到「结果」页听（合成不会自动出声）。"
             ready -> "模型文件齐了，还没加载。到「模型」页点「加载模型」（约 10~30 秒），" +
-                "或者直接点「合成语音」—— 它会自己先加载再合成。"
+                "或者直接点「$ACTION_REASONING」—— 它会自己先加载再合成。"
             installed > 0 -> "模型还不完整（已有 ${ModelStore.human(installed)}）。" +
                 "到「模型」页接着下，或从本地导入两份 .gguf。"
             else -> "还没有模型文件。到「模型」页下载（标准 3.55 GB / 精简 2.83 GB），" +
@@ -1540,7 +1543,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     failed != null -> "下载失败：$failed"
                     ModelStore.isVersionReady(this, src.version) ->
                         "下载完成（${ModelStore.human(src.totalBytes)}）。" +
-                            "现在可以点「加载模型」，或者直接点「合成语音」（会先加载再合成）。"
+                            "现在可以点「加载模型」，或者直接点「$ACTION_REASONING」（会先加载再合成）。"
                     else -> "下载中断，再点一次同一个镜像可以接着下"
                 }
                 refreshDeviceStats()
@@ -1564,6 +1567,20 @@ class VoxCpm2PluginService : PonkoPluginService() {
         private const val KEY_CFG = "cfg"
         private const val KEY_STEPS = "steps"
         private const val KEY_VOICE = "voice"
+
+        /**
+         * 宿主那个「合成」按钮在**本插件里**显示成什么。
+         *
+         * 宿主默认叫「合成」（`ActionLabels.kt` 里那张表，插件改不了它），
+         * 但 v3 起插件可以用 [buildActionLabels] 覆盖文字。
+         *
+         * 之所以叫「开始推理」而不是「合成语音」：它**只生成、不播放**
+         * （播放在旁边的「播放」）。带"语音"两个字容易让人以为点完就有声。
+         *
+         * 只在这里写一次 —— 下面那些指路文案（"到参数页点…"）全部插值引用它，
+         * 以后改名不会漏掉某一句，出现"照着文案找按钮却找不到"。
+         */
+        private const val ACTION_REASONING = "开始推理"
 
         /** 推理历史留几条。只放内存，关掉进程就没了（见 [Record] 的说明） */
         private const val HISTORY_KEEP = 5
