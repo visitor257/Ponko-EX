@@ -306,7 +306,7 @@ class MyPluginService : PonkoPluginService() {
 | `TTS` | text → audio | Selected by the "speak the answer" route |
 | `ASR` | audio → text | reserved |
 | `IMG` | image generation | reserved |
-| `TEST` | test / sample plugin | Excluded from speech routing, but can still be previewed. **Whether the engine loads on connect is decided separately by `AUTOLOAD_ENGINE`** |
+| `TEST` | test / sample plugin | Excluded from speech routing, but can still be synthesised and played. **Whether the engine loads on connect is decided separately by `AUTOLOAD_ENGINE`** |
 
 **Sample plugins must declare `TEST`, never `TTS`.** They emit fixed tones, not
 speech; declaring `TTS` means the host will pick them for real read-aloud and the
@@ -315,7 +315,7 @@ user hears an inexplicable arpeggio.
 ### 6.1 `AUTOLOAD_ENGINE`: load timing is your call
 
 **Nothing loads automatically by default.** The engine is loaded when the user taps
-"Load engine" or "Preview".
+"Load engine" or "Synthesize".
 
 That default is deliberate, because the cost of loading differs by orders of
 magnitude:
@@ -350,7 +350,7 @@ The UI differs between the two:
 | | Declared | Not declared |
 |---|---|---|
 | After connecting | starts loading right away | does nothing; a "Load engine" button appears |
-| User taps "Preview" | synthesises directly | loads first, then synthesises (no manual tap needed) |
+| User taps "Synthesize" | synthesises directly | loads first, then synthesises (no manual tap needed) |
 
 In other words **not declaring doesn't make the plugin unusable** — it just hands
 the "when do I pay" decision back to the user.
@@ -399,11 +399,11 @@ Three rules:
 
 1. **`loadEngine` is idempotent.** When it's called is decided by §6.1: plugins that
    declare `AUTOLOAD_ENGINE` get one call on connect; others wait for the user to tap
-   "Load engine" or "Preview". Repeat calls are free.
+   "Load engine" or "Synthesize". Repeat calls are free.
 2. **After a job the state returns to `READY`, not `UNLOADED`** — unless the engine
    genuinely failed to load. (An early version keyed off "model size > 0", so a
    model-less plugin was marked unloaded right after its first synthesis and the
-   second preview reported "engine not loaded". See `log/`.)
+   second synthesis reported "engine not loaded". See `log/`.)
 3. **`closeEngine` must be idempotent.** The host calls it when the user taps
    "Unload engine", on disable, on page
    destroy, and when the process is reclaimed.
@@ -431,7 +431,7 @@ What that means for you:
   would be a lie
 
 > An earlier SDK returned `BUSY` in that window, so a user who unloaded and then tapped
-> preview saw "the previous clip is still being generated, please wait". **Fixed** (the
+> synthesis saw "the previous clip is still being generated, please wait". **Fixed** (the
 > SDK now has a separate `closing` flag). The fix needs the AAR republished and plugins
 > rebuilt to take effect.
 
@@ -441,7 +441,7 @@ What that means for you:
 
 ### What the request actually carries
 
-Since Ponko 2.0.0 the plugin page has a "preview parameters" block that really
+Since Ponko 2.0.0 the plugin page has a "synthesis parameters" block that really
 fills these fields in — they are no longer "declared but never used":
 
 | Field | Filled by | Notes |
@@ -536,7 +536,7 @@ for (i in 0 until n) {
 ```
 
 **You must check periodically, and often enough.** Skipping the check doesn't just
-make cancellation slow — the host sits on "stopping…" forever, the Preview button
+make cancellation slow — the host sits on "stopping…" forever, the Synthesize button
 stays greyed out, and the user has to leave the page and come back. Check points that
 are too sparse (say, once per finished note) are indistinguishable from no support.
 
@@ -685,12 +685,12 @@ is unavailable; visibility is the clue. If it truly shouldn't exist, don't retur
 | Location | Contents | Examples |
 |---|---|---|
 | Card (host-painted) | management actions | Enable / Activate / Enter / Uninstall |
-| Plugin form (host-painted, content from plugin) | **functions** and parameters | Preview, download model, speed, voice |
+| Plugin form (host-painted, content from plugin) | **functions** and parameters | Synthesize, play, download model, speed, voice |
 
 Rule of thumb: **the plugin owns "what's possible" (capabilities), the host owns
-"how it's triggered" (buttons).** "Preview" means the host starts a synthesis and
-plays the result, so the button is host-painted — but it's a *function*, so it lives
-in the plugin form rather than on the card.
+"how it's triggered" (buttons).** "Synthesize" means the host runs inference and
+writes a file (it does not play it), so the button is host-painted — but it's a
+*function*, so it lives in the plugin form rather than on the card.
 
 ### Which buttons an audio plugin gets (worth knowing)
 
@@ -701,17 +701,20 @@ form. They aren't defined by the plugin, but **their labels can be overridden**
 | Button | When present | What happens |
 |---|---|---|
 | Load engine / Unload engine | only when `AUTOLOAD_ENGINE` is **not** declared | host calls `loadEngine` / `closeEngine` |
-| Preview → Re-synthesise | always | host sends a `synthesize` then plays it. **Renamed once output exists**, because at that point it means "run inference again" |
+| Synthesize | always | host sends a `synthesize` and **writes the file; it does not play it** |
 | Play | **after output exists** | replays the existing file, **no inference** |
 | Stop | enabled during synthesis | host calls `cancel()`; you answer `CANCELLED` |
 | Save | after output exists | copies the audio into the system Music/Ponko library |
 
-So: **don't add your own "preview" or "play" button to `UiSchema`** — the host already
+So: **don't add your own "synthesize" or "play" button to `UiSchema`** — the host already
 handles both. Spend the form on what's genuinely yours (model choice, voice,
 parameters, downloads).
 
-> "Play" and "Re-synthesise" are different things. Listening again is a **frequent**
-> action, and re-synthesising on a phone costs 1–2 minutes.
+> **Synthesising and playing are two separate actions with two separate buttons.**
+> Listening again is a **frequent** action, and re-synthesising on a phone costs
+> 1–2 minutes — so don't try to save a button by playing automatically on completion.
+> That forces every generation to be listened to, which makes the plugin unusable in
+> a quiet room.
 
 ### Renaming the host's buttons (SDK v3 and later)
 
@@ -734,11 +737,10 @@ the host — a plugin can't create a button, only give its own cell a different 
 |---|---|---|
 | `ActionLabel.ENGINE_LOAD` | Load engine | engine not ready |
 | `ActionLabel.ENGINE_UNLOAD` | Unload engine | engine ready (same button, other state) |
-| `ActionLabel.PREVIEW` | Preview | no output yet |
-| `ActionLabel.PREVIEW_AGAIN` | Re-synthesise | output exists (same button) |
-| `ActionLabel.PLAY` | Play | always |
-| `ActionLabel.STOP` | Stop | always |
-| `ActionLabel.SAVE` | Save | always |
+| `ActionLabel.REASONING` | Synthesize | always. **Runs inference, produces a file, does not play it** |
+| `ActionLabel.PLAY` | Play | always (enabled once output exists). Replays only, no inference |
+| `ActionLabel.STOP` | Stop | always (enabled during synthesis) |
+| `ActionLabel.SAVE` | Save | always (enabled once output exists) |
 
 **Any key you leave out keeps the host default.** You don't have to override the whole
 set — Echo overrides two and leaves the rest, which doubles as a live check that both
@@ -751,7 +753,7 @@ sources can coexist in the same row.
 | Local model | `engine.load` → "Load model 3.5G" | the size tells the user how long this takes and what it costs in RAM |
 | Network API | `engine.load/unload` → "Connect / Disconnect" | there is no model; calling it an engine is simply wrong |
 | Model can stay resident | `engine.unload` → "Free memory" | the user cares about RAM, not about the verb "unload" |
-| Toy / test plugin | `preview` → "Run a test" | it doesn't synthesise speech; "Preview" implies auditioning a voice |
+| Toy / test plugin | `reasoning` → "Run a test" | it doesn't synthesise speech; "Synthesize" implies producing a voice |
 
 #### Hard limits
 
@@ -851,7 +853,7 @@ host, so write human language.
 | `bindService` returns **false** | ① package is **stopped** (never activated) ② service disabled by the system ③ intent doesn't resolve |
 | **SecurityException** | signature mismatch, or the host lacks the signature permission (reboot and retry) |
 | Bound, then times out after 5 s | plugin process can't start: missing `.so`, wrong ABI, crash during init |
-| First preview works, second says "engine not loaded" | wrong predicate in the plugin's state machine (see §7) |
+| First synthesis works, second says "engine not loaded" | wrong predicate in the plugin's state machine (see §7) |
 | Runtime `NoSuchMethodError` | AIDL changed but the **SDK AAR wasn't republished**; plugin built against the old interface |
 | Form shows "this widget needs a newer Ponko" | plugin used a `type > MAX_KNOWN` |
 
@@ -893,8 +895,8 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] `capabilities` reflect real promises (samples use `TEST`, not `TTS`)
 - [ ] Signed with the host's key; `apksigner verify --min-sdk-version 23` all true
 - [ ] No launcher icon (activator only, no `CATEGORY_LAUNCHER`)
-- [ ] On a clean device: Enable → Preview → audible, first try
-- [ ] Preview twice or more (exercises the engine state machine)
+- [ ] On a clean device: Enable → Synthesize → Play → audible, first try
+- [ ] Synthesize twice or more (exercises the engine state machine)
 - [ ] **"Stop" mid-generation ends it promptly** (check points are dense enough, host buttons reset)
 - [ ] Clone mode with a picked reference audio actually produces output (host sends an FD; plugin decodes to 16 kHz)
 - [ ] After changing "inference threads", restart the plugin and confirm `config.threads` is honoured
@@ -903,7 +905,7 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] If not declared: the "Load engine" button appears, loads, unloads, and its label follows the state
 - [ ] "Unload engine" resets the button afterwards (it does not stay on "Unload", with a
       second tap loading the model back in)
-- [ ] Preview immediately after unloading does not report "the previous clip is still
+- [ ] Synthesize immediately after unloading does not report "the previous clip is still
       being generated"
 - [ ] Once output exists, "Play" replays without re-running inference
 - [ ] `intro` / `label` / `help` are written as plain text, no markdown lists or headings
