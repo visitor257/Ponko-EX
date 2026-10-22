@@ -873,8 +873,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 installed > 0 -> "不完整 · 已有 ${ModelStore.human(installed)}"
                 else -> "没有可用的模型文件"
             },
-            help = if (readySet?.origin == "本地导入")
-                "本地导入的两个文件优先于已下载的" else "",
         )
         items += UiItem(
             key = "st_engine", type = UiType.STATUS, label = "引擎",
@@ -897,15 +895,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // "我现在就想跑"的入口。两边都能按，状态也都会立刻同步。
         items += UiItem(
             key = "en_load", type = UiType.ACTION, label = "加载模型",
-            help = if (nativeReady) "已经加载过了，重复点只会立刻返回"
-            else if (readySet == null) "先导入或下载模型文件"
-            else "约 10~30 秒，占 ${ModelStore.human(readySet.bytes)} 内存",
+            // 只在**按不下去**时说原因。能按的时候不解释要花多久、占多少内存 ——
+            // 那是第一次用才需要的知识，之后每天都看见就是噪音
+            help = if (readySet == null) "先导入或下载模型文件" else "",
             enabled = !nativeReady && readySet != null && !engineUnloading,
             primary = !nativeReady && readySet != null,
         )
         items += UiItem(
             key = "en_unload", type = UiType.ACTION, label = "释放模型",
-            help = "只是把权重从内存里放掉，文件还在磁盘上；下次用再加载一次",
             enabled = nativeReady && !engineUnloading,
         )
 
@@ -923,7 +920,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
             label = "主干模型 BaseLM",
             value = if (importingRole == ModelStore.ROLE_BASE_LM) "正在复制…"
             else importedState(ModelStore.ROLE_BASE_LM),
-            help = "选 .gguf：VoxCPM2-BaseLM-Q8_0（1.73 GB）或 Q4_K_M（1.00 GB）",
+            // help 只留**文件名**：这是选文件时唯一要对照的东西，不是一句说明
+            help = "VoxCPM2-BaseLM-*.gguf",
             enabled = !nativeReady && !downloading && importingRole.isEmpty(),
         )
         items += UiItem(
@@ -931,7 +929,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             label = "声学模型 Acoustic",
             value = if (importingRole == ModelStore.ROLE_ACOUSTIC) "正在复制…"
             else importedState(ModelStore.ROLE_ACOUSTIC),
-            help = "选 .gguf：VoxCPM2-Acoustic-F16（1.83 GB）。两个槽位都齐了才能加载",
+            help = "VoxCPM2-Acoustic-*.gguf",
             enabled = !nativeReady && !downloading && importingRole.isEmpty(),
         )
 
@@ -944,7 +942,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
             options = ModelStore.VERSIONS.map {
                 UiOption(it.key, "${it.label} · ${ModelStore.human(it.totalBytes)}")
             },
-            help = v.note,
             enabled = !downloading,
         )
 
@@ -971,8 +968,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
             items += UiItem(
                 key = "dl_${src.mirror.key}", type = UiType.ACTION,
                 label = "从 ${src.mirror.label} 下载",
-                help = if (versionReady) "这一套已经下好了，不用再下"
-                else "${src.mirror.note} · 支持断点续传",
                 enabled = !downloading && !versionReady,
                 primary = !downloading && !versionReady && src.mirror.key == mirrorKey,
             )
@@ -981,8 +976,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (downloading || (installed > 0 && !versionReady)) {
             items += UiItem(
                 key = KEY_DL_PROGRESS, type = UiType.PROGRESS, label = "下载进度",
-                help = if (downloading && dlDetail.isNotEmpty()) dlDetail
-                else "支持断点续传：中断后再点一次会从断点接着下",
+                // dlDetail 是实时速度 / 剩余时间，属于状态，不是说明
+                help = if (downloading) dlDetail else "",
                 value = "%.1f".format(if (downloading) dlPercent else 0.0),
             )
         }
@@ -992,21 +987,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (installed > 0 && !downloading) {
             items += UiItem(
                 key = "dl_delete", type = UiType.ACTION, label = "删除已下载的模型",
-                help = "释放 ${ModelStore.human(installed)}。不动本地导入的那份；" +
-                    "引擎正在用时删不掉，先在卡片上停用插件",
+                help = "释放 ${ModelStore.human(installed)}",
             )
         }
         if (dlNotice.isNotEmpty()) {
             items += UiItem(key = "st_notice", type = UiType.STATUS, label = "提示", value = dlNotice)
         }
-
-        items += UiItem(
-            key = "src_note", type = UiType.INFO,
-            label = "模型不进 APK：下到插件自己的私有目录，卸载插件时一起删掉。\n" +
-                "标准 Q8 的仓库声明 apache-2.0；精简 Q4 是第三方 GGUF 转换件、仓库没填许可" +
-                "（上游权重仍是 apache-2.0）—— 介意许可就留在标准版。\n" +
-                "手机上装不下两份就只留一份：先「删除已下载的模型」，再下另一套。",
-        )
 
         // ==================== 页 2 · 参数 ====================
         items += UiItem(key = "tab_param", type = UiType.TAB, label = "参数")
@@ -1023,26 +1009,20 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 只在「参数」页放一个：宿主只认第一个，多放几个也只生效第一个。
         items += UiItem(key = "host", type = UiType.HOST_SLOT)
 
-        items += UiItem(
-            key = "param_note", type = UiType.INFO,
-            label = "上面那块（目标文本 / 模式 / 参考音频 / 逐字稿 / 种子 / 线程）由 Ponko 提供，" +
-                "那是「这一次怎么发」。下面这些是插件自己的默认值，会真的进推理。",
-        )
-
         items += UiItem(key = "sec_param", type = UiType.SECTION, label = "插件默认值")
         items += UiItem(
             key = "voice", type = UiType.TEXTAREA, label = "语音设计描述（默认）",
-            help = "只在宿主没给描述时生效。会拼成「(描述)正文」，相当于凭空造一个音色；留空用模型自带音色",
             value = voiceDesign,
         )
         items += UiItem(
             key = "cfg", type = UiType.TEXT, label = "CFG 引导强度",
-            help = cfgHint.ifEmpty { "1.0 ~ 4.0，官方建议 2.0。越大越贴文本、越小越自由" },
+            // cfgHint / stepsHint 只在**填错**时才有内容（校验回显），不是常驻说明
+            help = cfgHint,
             value = trimNum(cfg.toDouble()),
         )
         items += UiItem(
             key = "steps", type = UiType.TEXT, label = "扩散步数",
-            help = stepsHint.ifEmpty { "4 ~ 24 的整数，10 起步；调高更细腻，但也更慢" },
+            help = stepsHint,
             value = timesteps.toString(),
         )
 
@@ -1050,8 +1030,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(key = "sec_infer", type = UiType.SECTION, label = "本次推理")
         items += UiItem(
             key = KEY_INFER_PROGRESS, type = UiType.PROGRESS, label = "推理进度",
-            help = if (inferring) "正在生成（总长按字数估，只是估计）"
-            else "不在推理时是满的（上次的结果）；第一次进来是 0",
             value = "%.1f".format(if (inferring) inferPercent else if (lastAudioSec > 0) 100.0 else 0.0),
         )
         if (lastAudioSec > 0.0) {
@@ -1105,8 +1083,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(
             key = KEY_LOG, type = UiType.LOG,
             value = logs,
-            help = "长按可复制。只保留最近 $LOG_KEEP 行；这和 logcat 是两回事，" +
-                "两个都有：adb logcat -s VoxCpm2Plugin",
         )
         items += UiItem(
             key = "log_clear", type = UiType.ACTION, label = "清空日志",
@@ -1120,14 +1096,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (lastAudioSec <= 0.0) {
             items += UiItem(
                 key = "res_empty", type = UiType.INFO,
-                label = "还没有推理结果。\n\n到「参数」页填好文本、点「$ACTION_REASONING」，" +
-                    "这里就会出现这次的种子、参数、文本和播放条。",
+                label = "还没有结果 · 到「参数」页点「$ACTION_REASONING」",
             )
         } else {
             items += UiItem(
                 key = "res_seed", type = UiType.STATUS, label = "种子",
-                value = "$lastSeed" +
-                    if (lastSeed == 0) "" else "（填到「参数」页的「种子」可复现这一条）",
+                value = "$lastSeed",
             )
             items += UiItem(
                 key = "res_param", type = UiType.STATUS, label = "参数",
@@ -1143,7 +1117,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 插件在另一个进程，自己播的话退出这一页声音还在响，宿主管不到。
             items += UiItem(
                 key = "audio", type = UiType.AUDIO, label = "这次的结果",
-                help = "能拖进度，适合反复听某一句；「参数」页那几个按钮控制的是同一个播放器",
             )
         }
 
@@ -1159,7 +1132,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (hist.isNotEmpty()) {
             items += UiItem(
                 key = "sec_hist", type = UiType.SECTION,
-                label = "推理历史（最多 $HISTORY_KEEP 条 · 每条可单独试听/保存）",
+                label = "历史",
             )
             hist.forEach { r ->
                 items += UiItem(
@@ -1178,15 +1151,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     items += UiItem(
                         key = historyAudioKey(r.index), type = UiType.AUDIO,
                         label = "#${r.index} 试听",
-                        help = "播的是这一条自己的音频；旁边「保存」存的也是这一条",
                     )
                 }
             }
-            items += UiItem(
-                key = "hist_note", type = UiType.INFO,
-                label = "历史只在本次运行内保留（最多 $HISTORY_KEEP 条），关掉插件进程就清空，" +
-                    "音频文件跟着一起删。想长期留存请点那一条的「保存」，它会进「音乐/Ponko」。",
-            )
         }
 
         // 页签组收尾。缺这一行的话，宿主会继续把后面的项往最后一页里塞
@@ -1196,26 +1163,19 @@ class VoxCpm2PluginService : PonkoPluginService() {
     }
 
     /**
-     * 页面顶部那段。
+     * 页面顶部那一行。
      *
-     * 不只写自我介绍 —— 第一句永远是「**现在该干什么**」。
-     * 插件页比独立 App 少一大块操作区，用户进来最容易迷路的就是"下一步"。
+     * **只留「现在该干什么」，不写产品介绍**：插件页本身已经很挤，
+     * 每次进来都先读两行广告会把三个页签顶下去一个屏幕。
+     * 模型就绪之后连这一行也不该占地方 —— 那时用户只需要知道按钮在哪。
      */
-    private fun buildIntro(ready: Boolean, installed: Long): String {
-        val next = when {
-            importingRole.isNotEmpty() -> "正在把选的文件复制进插件目录，别离开这一页。"
-            downloading -> "正在下载模型（${"%.0f".format(dlPercent)}%），下完就能合成。"
-            ready && nativeReady -> "引擎已就绪 —— 到「参数」页在「文本」里填写要念的内容，" +
-                "再点「$ACTION_REASONING」；合成完到「结果」页听（合成不会自动出声）。"
-            ready -> "模型文件齐了，还没加载。到「模型」页点「加载模型」（约 10~30 秒），" +
-                "或者直接点「$ACTION_REASONING」—— 它会自己先加载再合成。"
-            installed > 0 -> "模型还不完整（已有 ${ModelStore.human(installed)}）。" +
-                "到「模型」页接着下，或从本地导入两份 .gguf。"
-            else -> "还没有模型文件。到「模型」页下载（标准 3.55 GB / 精简 2.83 GB），" +
-                "或者从本地导入。下完才能合成。"
-        }
-        return "VoxCPM2（OpenBMB，2B）本地语音合成：30 种语言、9 种中文方言，" +
-            "音色设计与零样本克隆，48 kHz，除下载模型外全程离线。\n\n**$next**"
+    private fun buildIntro(ready: Boolean, installed: Long): String = when {
+        importingRole.isNotEmpty() -> "正在复制模型文件…"
+        downloading -> "正在下载 ${"%.0f".format(dlPercent)}%"
+        ready && nativeReady -> "填「文本」，点「$ACTION_REASONING」"
+        ready -> "点「加载模型」，或直接点「$ACTION_REASONING」"
+        installed > 0 -> "模型不完整 · 点「模型」页继续下载"
+        else -> "先到「模型」页下载或导入模型"
     }
 
     private fun modeName(m: Int): String = when (m) {

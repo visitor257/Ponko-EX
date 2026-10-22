@@ -20,8 +20,8 @@ android {
         applicationId = "com.litertchat.plugin.voxcpm2"
         minSdk = 28
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.6.1"
+        versionCode = 13
+        versionName = "0.6.2"
 
         ndk {
             // 引擎只有 arm64 版（NDK 交叉编译产物），x86 平板装不了
