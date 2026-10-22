@@ -754,6 +754,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         )
         // 让"上次合成"状态行和日志立刻出现，不用等用户退出再进来
         notifySchemaChanged()
+        // 合成是他点的，结果就该出现在眼前 —— 不用再手动点「结果」
+        jumpToResultPage()
 
         // 清掉旧产物，只留最近 3 个 —— 插件缓存没人替我们清
         runCatching {
@@ -861,7 +863,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         // 最外层标签页 → 宿主渲染成可左右滑的 ViewPager（2026-10-22 那版）。
         // 前提是它**不在 GROUP 里**：两层横滑会抢手势，所以内层会退化成点击切换。
-        items += UiItem(key = "tabs_main", type = UiType.TABS_START, label = "")
+        items += UiItem(key = GROUP_TABS, type = UiType.TABS_START, label = "")
 
         // ==================== 页 1 · 模型 ====================
         items += UiItem(key = "tab_model", type = UiType.TAB, label = "模型")
@@ -1091,7 +1093,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(key = "g_log_end", type = UiType.GROUP_END)
 
         // ==================== 页 3 · 结果 ====================
-        items += UiItem(key = "tab_result", type = UiType.TAB, label = "结果")
+        items += UiItem(key = TAB_RESULT, type = UiType.TAB, label = "结果")
 
         if (lastAudioSec <= 0.0) {
             items += UiItem(
@@ -1160,6 +1162,25 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(key = "tabs_main_end", type = UiType.TABS_END)
 
         return UiSchema(intro = buildIntro(readySet != null, installed), items = items)
+    }
+
+    /**
+     * 合成成功后翻到「结果」页（SDK v8 的 `notifySelectTab`）。
+     *
+     * **不能同步调**：基类是在 [synthesizeBlocking] **return 之后**才
+     * `callback.onResult(...)`，而宿主是在 onResult 里把音频落盘、让结果页的
+     * 播放条变成可用的。同步调 `selectTab` 就变成"先翻页、后拿到结果"，
+     * 用户会先看到一条空播放条。挂一小段延迟，让 onResult 先落地。
+     *
+     * 宿主 API < 8 时没有这个回调，`callback.selectTab` 会抛，被
+     * [notifySelectTab] 自己 catch 掉 —— 老宿主上是静默无效，不用判版本。
+     *
+     * 不判断"用户是不是正在别的页"：合成是他点的，翻过去就是他要看的东西。
+     */
+    private fun jumpToResultPage() {
+        mainHandler.postDelayed({
+            runCatching { notifySelectTab(GROUP_TABS, TAB_RESULT) }
+        }, TAB_SELECT_DELAY_MS)
     }
 
     /**
@@ -1542,11 +1563,31 @@ class VoxCpm2PluginService : PonkoPluginService() {
          */
         private const val ACTION_REASONING = "开始推理"
 
+        /**
+         * 最外层页签组的 key（`TABS_START`）。
+         *
+         * [notifySelectTab] 靠它定位"翻哪一组"，**必须非空、且和 schema 里一字不差** ——
+         * 拼错了的表现是跳转静默无效，不报错。
+         */
+        private const val GROUP_TABS = "tabs_main"
+
+        /** 「结果」页的 key。合成成功后自动翻到这里 */
+        private const val TAB_RESULT = "tab_result"
+
         /** 推理历史留几条。只放内存，关掉进程就没了（见 [Record] 的说明） */
         private const val HISTORY_KEEP = 5
 
         /** 推理进度推送间隔：轮询线程 400 ms 一次，这里再宽松一点 */
         private const val INFER_PUSH_INTERVAL_MS = 600L
+
+        /**
+         * 合成完成后隔多久翻到「结果」页。
+         *
+         * 这 250 ms 不是给动画留的，是给 `onResult` 留的：基类在本方法（
+         * `synthesizeBlocking`）返回之后才把结果交给宿主，宿主在那里面落盘、
+         * 让播放条可用。翻得太早会看到空播放条。
+         */
+        private const val TAB_SELECT_DELAY_MS = 250L
 
         /** 参考音频上限：只要 5~10 秒，给足余地但不让用户把几百 MB 的音频塞进来 */
         private const val MAX_REFERENCE_BYTES = 64L * 1024 * 1024
