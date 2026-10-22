@@ -5,7 +5,7 @@ A speech-synthesis plugin for [Ponko](https://github.com/visitor257/Ponko):
 
 [中文](README.md)
 
-**A 4.6 MB plugin plus 3.5 GB of weights (downloaded on first run) — a TTS with no network.**
+**A 4.6 MB plugin plus 2.8–3.6 GB of models (downloaded or imported on first run) — a TTS with no network.**
 No server, no API key, no telemetry. It works in airplane mode.
 
 |  |  |
@@ -29,8 +29,10 @@ No server, no API key, no telemetry. It works in airplane mode.
 
 1. Install `Ponko-EX_VoxCPM2_release.apk`
 2. Open Ponko → **Plugins** → enable **VoxCPM2**
-3. On the plugin page, under **1 · Weights**, tap **Download all weights** (3.55 GB, resumable, **use Wi-Fi**)
-4. Tap **Load model** at the top of the page (3.5 GB takes roughly 10–30 s); once the status reads *ready*, synthesise
+3. On the **Models** tab: pick a version (standard Q8 3.55 GB / compact Q4 2.83 GB) and tap a
+   mirror to download (resumable, **use Wi-Fi**) — **or** import the two `.gguf` files from
+   local storage (one slot for the backbone, one for the acoustic model)
+4. Tap **Load model** (roughly 10–30 s); once the engine row reads *ready*, synthesise
 
 > Loading is **a tap you make yourself**. Since 2.0.0 the host no longer loads every
 > plugin's engine on connect — only lightweight plugins that declare `AUTOLOAD_ENGINE`
@@ -44,26 +46,29 @@ No server, no API key, no telemetry. It works in airplane mode.
 > file **without re-running inference** — five seconds of speech takes 1–2 minutes on a
 > phone, so don't reach for Synthesise just to hear the same line again.
 >
-> The page also carries a **"listen" transport bar** (SDK v4 `UiType.AUDIO`). It drives the
+> The **Results** tab carries a **transport bar** (SDK v4 `UiType.AUDIO`). It drives the
 > **same player** as the Play button above it (the host's own), but you can see the time and
 > drag the position — the only way to get to one sentence in a one-to-two-minute clip.
+>
+> The action row is drawn by the host and sits **above** the three tabs, because only the host
+> can start a synthesis: the audio has to travel back through its `ResultBundle` channel to
+> become playable and saveable. Anything the plugin pushed on its own would be dropped by the
+> request gate.
 >
 > The plugin names those buttons (SDK v3 `buildActionLabels()`). The host's defaults are
 > *Load engine / Unload engine / Synthesise / Play / Stop / Save*; this plugin overrides two
 > of them — it loads a model, not an engine, and unloading leaves the file on disk (hence
 > "release"). Play / Stop / Save keep the host defaults.
 
-> **The host has to know v5.** This build is compiled against SDK v5 (tabs + log pane +
-> transport bar), so it needs a host that carries the 2026-10-22 SDK v5 update. Anything
-> older splits two ways:
+> **The host has to know v6.** This build is compiled against SDK v6 (three tabs + log pane +
+> transport bar + model slots), so it needs a host that carries the 2026-10-22 SDK batch.
+> Anything older splits two ways:
 >
 > - v3 or earlier (the build that still rejected anything outside a version range): refuses
->   to bind with "plugin SDK v5 incompatible" — the gate rejects it before it can hand over
->   a schema, so there is no fallback.
-> - v4: connects, and the log pane and transport bar work, but it does **not** know the tab
->   types. The three `TABS_*` items degrade one by one into "unknown control" text blocks,
->   so you get a few extra placeholder rows and all four pages in one column. Nothing
->   breaks; it just looks wrong. Either update Ponko or stay on 0.3.x.
+>   to bind — the gate rejects it before it can hand over a schema, so there is no fallback.
+> - v4/v5: connects and the page mostly works, but `MODEL_SLOT` (the two import rows) is
+>   unknown, so it degrades into "unknown control" text blocks and **importing a local file
+>   is not available** — download only. Update Ponko to use imports.
 >
 > For the record, the direction is now one-way: since `181dcf5` the host only rejects
 > plugins **older** than its minimum. A plugin newer than the host connects normally and
@@ -105,17 +110,28 @@ so the plugin exposes them in its own UI:
 |---|---|---|---|
 | CFG guidance | 2.0 | 1.0–4.0 | Higher sticks closer to the text, lower is freer |
 | Diffusion steps | 10 | 4–24 | More is finer, and linearly slower |
+| Seed | empty (random) | integer | Pin it to reproduce a delivery; the Results tab shows the seed actually used |
+| Threads | empty (follow Ponko) | 1–8 | Takes effect on the **next** engine load |
 | Voice design description | empty | — | Equivalent to the host's `voiceDescription`; if both are empty no prefix is added |
 
-The page is split into four tabs (SDK v5). Switching is pure visibility, never a rebuild,
-so typed text, slider values and scroll position all survive a switch:
+Seed and threads exist on both sides: **a value typed in the plugin page wins** over the
+host's; left empty, the host's applies.
+
+The page is split into **three tabs** (SDK v5); being the outermost group, they can be
+swiped left and right. Switching is pure visibility, never a rebuild, so typed text and
+scroll position survive a switch, and the tab you were on is remembered:
 
 | Tab | Contents |
 |---|---|
-| Status | Engine / weights / storage / device / last synthesis / notices, plus the **listen** transport |
-| Parameters | 1 · Weights (source, per-file state, progress, download / cancel / delete), 2 · Synthesis parameters |
-| Notes | Usage, licence, and the voice-rights reminder |
-| Log | Run log (clearable) |
+| Models | Model / engine / storage status, load and release, **local import** (two slots), download (version, per-file state, mirror buttons, progress, cancel, delete) |
+| Parameters | Voice design / CFG / steps / seed / threads, inference progress, last-run parameters, collapsible diagnostics, run log |
+| Results | Last run's seed / parameters / text / transport bar; inference history (this session only, at most 5 entries, metadata only) |
+
+**Target text, synthesis mode, reference audio and transcript are not on the plugin page** —
+they live in the host's *functional* block at the top. That block is the caller: those four
+describe *how this one call is dispatched*, and the plugin only receives the resulting
+`SynthesisRequest`. A text field in the plugin page that changed nothing would be worse than
+no field at all.
 
 The tab you were on is remembered: a full repaint (load finished / synthesis started /
 synthesis finished) does not bounce you back to the first tab.
@@ -126,7 +142,7 @@ long-press to copy, last 120 lines only. New lines arrive as **incremental patch
 and the *voice design* textarea you are typing into keeps its focus and content.
 Scrolling back through history is safe too: new lines don't yank you to the bottom (the
 host only follows the tail when the pane was already there).
-Download progress works the same way: it only touches the progress bar.
+Download and inference progress work the same way: they only touch their progress bar.
 
 ## The three modes
 
@@ -139,23 +155,39 @@ Download progress works the same way: it only touches the progress bar.
 **Choosing reference audio**: 5–10 seconds, one speaker, no music, no reverb. wav / mp3 /
 m4a / flac all work (decoded through `MediaCodec`, then resampled to 16 kHz).
 
-## Weights
+## Model files
 
-Not in the APK — 3.5 GB is not shippable. Downloaded on first use into the plugin's own
-external private directory:
+Not in the APK — 2.8–3.6 GB is not shippable. Two ways in:
 
-```
-Android/data/com.litertchat.plugin.voxcpm2/files/models/
-```
+**Local import** (SDK v6): the Models tab has two slots — backbone BaseLM and acoustic —
+each with its own *Import* button. The **host** opens the system file picker and forwards a
+read-only FD; the plugin copies the file into its own private directory
+(`files/imported/`). The picker cannot come from the plugin: it is a bound Service, has no
+`startActivityForResult`, and Android 10+ forbids it from starting activities in the
+background. **Imported files take priority over downloaded ones.**
 
-| Source | BaseLM | Acoustic | Total | Notes |
+**Download**, into
+`Android/data/com.litertchat.plugin.voxcpm2/files/models/`:
+
+| Version | BaseLM | Acoustic | Total | Notes |
 |---|---|---|---|---|
-| **Standard** (default) | Q8_0 1.73 GB | F16 1.83 GB | **3.55 GB** | Repository declares `apache-2.0` |
-| Compact | Q4_K_M 1.00 GB | F16 1.83 GB | **2.83 GB** | Third-party GGUF conversion, **no licence field** |
+| **Standard Q8** (default) | Q8_0 1.73 GB | F16 1.83 GB | **3.55 GB** | Repository declares `apache-2.0`; slightly better quality |
+| Compact Q4 | Q4_K_M 1.00 GB | F16 1.83 GB | **2.83 GB** | Third-party GGUF conversion, **no licence field**; **this is the set the standalone test build used** |
 
-Both come from ModelScope and support HTTP `Range`, so an interrupted download resumes.
-The default is the standard source not because it sounds much better, but because its
-provenance is unambiguous — if a distribution ever bundles the weights, there is nothing
+Mirrors are listed per version, and only combinations that actually exist:
+
+| Version | hf-mirror | HuggingFace | ModelScope |
+|---|---|---|---|
+| Compact Q4 | yes — `tc-mb/MiniCPM-V-Apps-gguf` | yes — same repo (usually unreachable from mainland China) | yes — `zerg13/MiniCPM-V-Apps-gguf` |
+| Standard Q8 | no | no | yes — `DennisHuang/VoxCPM2-GGUF` |
+
+The Q8_0 set has **no repository on HuggingFace** (hf-mirror 404s on that path, and it only
+proxies what really exists on HF), so the standard version is ModelScope-only. Showing a
+"Download from HuggingFace" button that 404s would be worse than not showing it.
+
+All of them use HTTP `Range`, so an interrupted download resumes from where it stopped.
+The default is the standard version not because it sounds much better, but because its
+provenance is unambiguous — if a distribution ever bundles the models, there is nothing
 extra to explain.
 
 `Acoustic` is the same file in both sets, but **`BaseLM` and `Acoustic` must come from the
@@ -207,10 +239,19 @@ To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxC
 
 - **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
 - **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
-- **One download source** — ModelScope only, no hf-mirror fallback
+- **The standard version has one download source** — ModelScope only; HuggingFace has no
+  such repository (see the table above)
 - **Play keeps only the latest file** — the host stores "the last thing that was
   synthesised", so synthesising again replaces it, and *Play* greys out for other plugins.
   Tap *Save* for anything worth keeping (it lands in `Music/Ponko`)
+- **History entries cannot be played or saved individually** — the host keeps one player
+  and one *Save* action, both bound to "the latest run". So the Results tab's history holds
+  seed / parameters / the first 40 characters only, and only for this session
+- **Diagnostics cannot start collapsed** — the host's `GROUP_START` has no "initially
+  collapsed" field; groups always open
+- **The inference progress bar is an estimate** — the native side only reports how many
+  seconds of audio exist, not a total step count, so the total is estimated from character
+  count (about 4.5 characters per second of Chinese speech)
 - **Long text is slow** — there is no hard character cap (the plugin never truncates), but
   phone RTF is 10–30, so 40 characters is already minutes
 - **Cancellation is not instantaneous** — the native side checks between audio chunks; if it
