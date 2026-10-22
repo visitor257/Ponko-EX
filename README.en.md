@@ -53,10 +53,16 @@ No server, no API key, no telemetry. It works in airplane mode.
 > of them — it loads a model, not an engine, and unloading leaves the file on disk (hence
 > "release"). Play / Stop / Save keep the host defaults.
 
-> **Update the host first.** This build reports SDK v4 (log pane / transport bar).
-> An older host (`API_MAX_SUPPORTED = 3`) refuses to bind and says
-> "plugin SDK v4 incompatible" — there is **no** graceful fallback here, because the
-> version gate rejects the plugin before it can render anything.
+> **The host has to know v4.** This build is compiled against SDK v4 (log pane / transport
+> bar), so it needs a host that carries the 2026-10-22 SDK v4 update (Ponko 2.0.0).
+> Anything older (`API_MAX_SUPPORTED = 3`) refuses to bind with "plugin SDK v4
+> incompatible" — the gate rejects it before it can hand over a schema, so there is no
+> fallback to plain text.
+>
+> For the record, the direction is now one-way: since `181dcf5` the host only rejects
+> plugins **older** than its minimum. A plugin newer than the host connects normally and
+> its unknown controls degrade to a "label + value + update Ponko" text block — so the
+> "your plugin is too old" prompt no longer fires at a plugin that is already current.
 
 > **The signature must match the host.** Ponko protects plugin binding with a
 > `signature`-level permission, so a mismatched key makes `bindService` throw
