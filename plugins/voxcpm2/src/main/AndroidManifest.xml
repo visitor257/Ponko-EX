@@ -56,6 +56,27 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs local VoxCPM2 speech synthesis requested by the Ponko app" />
+
+            <!--
+              功能按钮白名单（宿主 v9.1 起读）。
+
+              宿主默认给五个：加载模型 / 开始推理 / 播放 / 停止 / 保存。
+              这个插件只留两个：
+
+              · 加载模型 —— 模型页已经有「加载模型 / 释放模型」，而且点「开始推理」
+                本来就会自动加载，顶部再来一个只是重复
+              · 播放、保存 —— 合成完会自动跳到「结果」页，那里有播放条，
+                每条历史也各有自己的播放条和「保存」；参数页再放一份是第三个入口
+
+              留下的这两个宿主会叠进**同一个槽位**交替显示：
+              合成中显示「停止」，空闲时显示「开始推理」，位置不动。
+
+              ⚠ 白名单只能减少按钮，不能凭空造。写错 id 宿主只打一行日志、
+              界面上少一个按钮，不会报错 —— 改这里之后请确认按钮还在。
+            -->
+            <meta-data
+                android:name="ponko.actions"
+                android:value="reasoning,stop" />
         </service>
     </application>
 

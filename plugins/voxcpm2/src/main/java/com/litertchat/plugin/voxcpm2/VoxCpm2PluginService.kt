@@ -999,19 +999,30 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // ==================== 页 2 · 参数 ====================
         items += UiItem(key = "tab_param", type = UiType.TAB, label = "参数")
 
-        // ★ 宿主的功能块就画在这里（SDK v7 的 HOST_SLOT）。
+        // ★ 宿主的参数区 / 按钮行 / 诊断**分三段**挂（SDK v9.1 的 HOST_SLOT 分段）。
         //
-        // 里面是：加载 / 开始推理 / 播放 / 停止 / 保存 那一排按钮 +
-        // 目标文本 / 模式 / 参考音频 / 逐字稿 / 种子 / 线程 / CPU-GPU + 进度提示 + 诊断。
+        // 顺序就是用户要的那个：目标文本 → 开始推理 → 进度条。
+        // 整块挂做不到 —— 整块时块内固定是「按钮行 → 参数区 → 诊断」，
+        // 按钮永远压在文本上面，插件没有语法能把它挪下来。
         //
-        // 为什么让宿主画、插件不自己摆：那排按钮背后是宿主的状态机
+        // 为什么按钮仍由宿主画、插件不自己摆：那排按钮背后是宿主的状态机
         // （引擎是否就绪、是否正在合成、参考音频的 FD、存到音乐库），
-        // 插件重画就得把这些也搬过来，两边各存一份必然打架。这里只换挂载点。
+        // 插件重画就得把这些也搬过来，两边各存一份必然打架。插件只决定挂在哪。
         //
-        // 只在「参数」页放一个：宿主只认第一个，多放几个也只生效第一个。
-        items += UiItem(key = "host", type = UiType.HOST_SLOT)
+        // 每一段宿主**只认第一个坑**，所以三个 key 各不相同。
+        items += UiItem(key = "host_params", type = UiType.HOST_SLOT, value = "params")
 
-        items += UiItem(key = "sec_param", type = UiType.SECTION, label = "插件默认值")
+        // 按钮行。白名单（manifest 的 ponko.actions）已经把「加载模型 / 播放 / 保存」
+        // 摘掉了，只剩「开始推理」和「停止」—— 宿主把这一对叠进**同一个槽位**，
+        // 合成中显示「停止」、空闲时显示「开始推理」，两者位置完全重合。
+        items += UiItem(key = "host_actions", type = UiType.HOST_SLOT, value = "actions")
+
+        // 进度条紧跟按钮下面：合成一开头就能看到它动，不用翻到页底
+        items += UiItem(
+            key = KEY_INFER_PROGRESS, type = UiType.PROGRESS, label = "推理进度",
+            value = "%.1f".format(if (inferring) inferPercent else if (lastAudioSec > 0) 100.0 else 0.0),
+        )
+
         items += UiItem(
             key = "voice", type = UiType.TEXTAREA, label = "语音设计描述（默认）",
             value = voiceDesign,
@@ -1028,24 +1039,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
             value = timesteps.toString(),
         )
 
-        // ---- 本次推理 ----
-        items += UiItem(key = "sec_infer", type = UiType.SECTION, label = "本次推理")
-        items += UiItem(
-            key = KEY_INFER_PROGRESS, type = UiType.PROGRESS, label = "推理进度",
-            value = "%.1f".format(if (inferring) inferPercent else if (lastAudioSec > 0) 100.0 else 0.0),
-        )
-        if (lastAudioSec > 0.0) {
-            items += UiItem(
-                key = "st_last_param", type = UiType.STATUS, label = "上次用的参数",
-                value = "种子 $lastSeed · cfg ${trimNum(lastCfg.toDouble())} · 步数 $lastSteps · " +
-                    modeName(lastMode),
-            )
-            items += UiItem(
-                key = "st_last_perf", type = UiType.STATUS, label = "上次耗时",
-                value = "${"%.1f".format(lastAudioSec)} s 音频 / ${lastGenMs / 1000} s · " +
-                    "RTF ${"%.1f".format(lastRtf)} · $loadedThreads 线程",
-            )
-        }
+        // 「上次用的参数 / 上次耗时」两行删了 —— 结果页已经有同样的数字
+        // （种子 / cfg / 步数 / 时长 / RTF），这里再来一份只是把页面拉长。
+
+        // ---- 宿主的诊断（默认折叠）----
+        items += UiItem(key = "host_diag", type = UiType.HOST_SLOT, value = "diag")
 
         // ---- 插件内部状态（默认收起）----
         //
