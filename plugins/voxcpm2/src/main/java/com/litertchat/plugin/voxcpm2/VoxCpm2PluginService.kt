@@ -135,6 +135,45 @@ class VoxCpm2PluginService : PonkoPluginService() {
         history.toList().reversed()
     }
 
+    // ---- 历史音频（SDK v7：每条 AUDIO 条目可以播自己的文件）----
+
+    /** schema 里那条 AUDIO 的 key。**和 [notifyAudioFile] 里的 key 必须一模一样** */
+    private fun historyAudioKey(index: Int): String = "h${index}_audio"
+
+    /** 历史音频目录。插件私有，卸载时系统一起删 */
+    private fun histDir(): java.io.File =
+        java.io.File(filesDir, "hist").apply { if (!exists()) mkdirs() }
+
+    /**
+     * 给一条历史留一份**自己的**音频，并交给宿主绑定到它那一行。
+     *
+     * 为什么必须复制：宿主只保留"最近一次产物"，再合成一次就被覆盖了；
+     * 而历史里的第 3 条永远是第 3 条的音频，不能跟着最新那次跑。
+     *
+     * 复制和 Binder 回调都在锁外做 —— IO 和跨进程调用不能占着历史锁。
+     */
+    private fun rememberAudioForHistory(src: java.io.File, index: Int) {
+        val dst = try {
+            val f = java.io.File(histDir(), "h$index.wav")
+            src.copyTo(f, overwrite = true)
+            f
+        } catch (t: Throwable) {
+            Log.w(TAG, "历史音频另存失败：${t.javaClass.simpleName}")
+            return
+        }
+        // 送了才画播放条：没送成功的记录画了也只会放最新那条，那是骗人
+        synchronized(historyLock) {
+            history.firstOrNull { it.index == index }?.hasAudio = true
+        }
+        // fd 交给宿主，宿主读完负责关（和 notifyImage 一样，这里不要自己 close）
+        notifyAudioFile(historyAudioKey(index), dst)
+    }
+
+    /** 一条记录被挤出去时删掉它的音频，不能只删记录 */
+    private fun dropHistoryAudio(index: Int) {
+        runCatching { java.io.File(histDir(), "h$index.wav").delete() }
+    }
+
     /**
      * 槽位状态文字。空串 = 未导入（宿主据此决定要不要画「清除」按钮）。
      *
@@ -160,27 +199,19 @@ class VoxCpm2PluginService : PonkoPluginService() {
     @Volatile private var timesteps = 10
     @Volatile private var voiceDesign = ""
 
-    /**
-     * 固定种子；空 = 随机。
-     *
-     * 这一项是**插件自己的**，不是宿主的：宿主 `PreviewParams.seed` 是 0 时
-     * 表示"随机"，插件给了种子就用插件的。想在结果页看到"这次用的哪个种子"
-     * 并在下次复现同一段演绎，只能有这个输入框。
-     */
-    @Volatile private var seedText = ""
-
-    /**
-     * 强制线程数；空/0 = 跟随宿主（`EngineConfig.threads`）或自动估算。
-     *
-     * 改了**下次加载引擎才生效** —— nativeInit 是唯一设置线程的地方。
-     */
-    @Volatile private var threadsText = ""
-
     /** 数字输入框的校验回显：输入非法时告诉用户"保留了什么"，而不是默默吞掉 */
     @Volatile private var cfgHint = ""
     @Volatile private var stepsHint = ""
-    @Volatile private var seedHint = ""
-    @Volatile private var threadsHint = ""
+
+    // ---- 种子 / 线程：**只有宿主一份**（SDK v7 起）----
+    //
+    // 以前插件页也各有一个输入框，结果是两套值：用户在插件页填了种子、又去改宿主的
+    // 「种子」，改完没反应 —— 因为插件的值优先。线程同理。
+    //
+    // 现在宿主的参数区（`PreviewParams.seed` / `threads`）就在「参数」页里、
+    // 紧挨着插件自己的参数，用户看到的是一个控件，实际也只有一份值：
+    // · 种子 —— 走 `SynthesisRequest.seed`
+    // · 线程 —— 走 `EngineConfig.threads`（改完下次加载引擎生效）
 
     // ---- 设备信息：**不能在 buildSettingsSchema() 里现取** ----
     //
@@ -214,14 +245,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
     /**
      * 推理历史，**只在内存里，最多 [HISTORY_KEEP] 条**。
      *
-     * 为什么不落盘：音频本体在宿主的缓存里（
-     * `lastAudioFile` 只有一份），插件存个"种子 + cfg + 文本前 40 字"的清单，
-     * 关掉进程就没意义了 —— 下次进界面既不能重播也不能保存，留着只是噪音。
+     * 关掉进程就没意义了 —— 那条清单本身（种子 / 参数 / 文本）留着也没法重播，
+     * 所以不落盘。但**音频要在**：SDK v7 起宿主支持 `onAudioFile(key, fd, name)`，
+     * 录一条就送一份，那一行播的、存的都是它自己（见 [rememberAudioForHistory]）。
+     * 音频文件放 `filesDir/hist/`，跟着记录一起删，卸载插件时一起清掉。
      */
     private val history = ArrayDeque<Record>()
     private val historyLock = Any()
 
-    /** 一条历史记录。**没有音频路径** —— 宿主只保留最近一份产物，见 [buildSettingsSchema] 的说明 */
+    /** 一条历史记录。[hasAudio] = 已经给宿主送过这一条的文件（送了才画播放条） */
     private data class Record(
         val index: Int,
         val seed: Int,
@@ -232,6 +264,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val text: String,
         val audioSec: Double,
         val genMs: Long,
+        var hasAudio: Boolean = false,
     )
 
     // ---- 界面日志 ----
@@ -373,9 +406,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
             cfg = it.getFloat(KEY_CFG, cfg).coerceIn(1f, 4f)
             timesteps = it.getInt(KEY_STEPS, timesteps).coerceIn(4, 32)
             voiceDesign = it.getString(KEY_VOICE, "") ?: ""
-            seedText = it.getString(KEY_SEED, "") ?: ""
-            threadsText = it.getString(KEY_THREADS, "") ?: ""
         }
+        // 历史清单只在内存里，进程新建时它必然是空的 ——
+        // 上一轮留下的音频文件已经没人能播（没有对应的记录），直接清掉，
+        // 否则 filesDir/hist 会一轮轮攒下去，用户还看不见
+        runCatching { histDir().listFiles()?.forEach { f -> f.delete() } }
         refreshDeviceStats()
         logLine("插件进程启动 · $devCores 核 · 内存 ${gb(devMemAvail)}/${gb(devMemTotal)} 可用")
     }
@@ -430,15 +465,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
             )
         }
 
-        // 宿主（Ponko 2.0.0 起）在插件页给了「推理线程」，连上时传的是真值：
-        // 默认 核数-1，夹在 1..6。只有用户选了「自动」（宿主传 0）才退回自己的估算。
-        //
-        // 优先级：**插件页填的线程数 > 宿主传的 > 自己估算**。
-        // 用户在插件页显式填了数字，就是为了压过宿主的默认值 —— 那是这一项存在的理由。
+        // 线程数只有一个来源：宿主参数区的「推理线程」（`EngineConfig.threads`）。
+        // 插件页那个输入框在 v0.6.0 删掉了 —— 两份值只会互相覆盖。
+        // 宿主默认传「核数-1」并夹在 1..6；只有用户选「自动」（传 0）才由这里估算。
         val cores = Runtime.getRuntime().availableProcessors()
-        val threads = threadsOverride()
-            ?: if (config.threads > 0) config.threads
-            else (cores - 1).coerceIn(2, 6)
+        val threads = if (config.threads > 0) config.threads
+        else (cores - 1).coerceIn(2, 6)
 
         val rc = VoxCpm2Bridge.nativeInit(
             chosen.baseLm.absolutePath,
@@ -507,19 +539,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
             }, "voxcpm2-unload").apply { isDaemon = true; start() }
         }
     }
-
-    /**
-     * 插件页填的线程数；没填返回 null（调用方回落到宿主传的 / 自动估算）。
-     *
-     * 范围 1..8：超过物理核数只是让系统反复切换上下文，不会更快；
-     * 8 是给大核多的机器留的余量，真超了 nativeInit 那边也只是排队。
-     */
-    private fun threadsOverride(): Int? =
-        threadsText.trim().toIntOrNull()?.takeIf { it in 1..8 }
-
-    /** 插件页填的固定种子；没填返回 0（调用方回落到宿主 / 随机） */
-    private fun seedOverride(): Int =
-        seedText.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
 
     // ======================================================== 合成
 
@@ -612,9 +631,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         out.throwIfCancelled()
 
         val outFile = File(cache, "out_${System.currentTimeMillis()}.wav")
-        // 种子优先级：插件页填的固定值 > 宿主传的 > 随机
-        val seed = seedOverride().takeIf { it > 0 }
-            ?: req.seed.takeIf { it != 0 }
+        // 种子只有一个来源：宿主参数区的「种子」。0 = 随机，非 0 就能复现同一段演绎
+        val seed = req.seed.takeIf { it != 0 }
             ?: (System.nanoTime() and 0x7fffffff).toInt()
         val useCfg = if (req.cfg > 0f) req.cfg else cfg
         val useSteps = if (req.timesteps > 0) req.timesteps else timesteps
@@ -712,17 +730,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
         lastText = rawText
         inferPercent = 100.0
 
+        var recordIndex = 0
+        val evicted = ArrayList<Int>()
         synchronized(historyLock) {
-            val idx = (history.lastOrNull()?.index ?: 0) + 1
+            recordIndex = (history.lastOrNull()?.index ?: 0) + 1
             history.addLast(
                 Record(
-                    index = idx, seed = seed, cfg = useCfg, steps = useSteps, mode = mode,
+                    index = recordIndex, seed = seed, cfg = useCfg, steps = useSteps, mode = mode,
                     chars = rawText.length, text = preview(rawText),
                     audioSec = seconds, genMs = genMs,
                 )
             )
-            while (history.size > HISTORY_KEEP) history.removeFirst()
+            while (history.size > HISTORY_KEEP) evicted += history.removeFirst().index
         }
+        // 给这条历史留一份自己的音频并交给宿主（v7）——「结果」页那一条才有独立的播放/保存。
+        // 必须在下面的 notifySchemaChanged() 之前：播放条是画给 hasAudio = true 的记录的。
+        rememberAudioForHistory(outFile, recordIndex)
+        evicted.forEach { dropHistoryAudio(it) }
         refreshDeviceStats()
         logLine(
             "完成：${"%.1f".format(seconds)} s 音频 / ${genMs} ms / " +
@@ -984,14 +1008,25 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // ==================== 页 2 · 参数 ====================
         items += UiItem(key = "tab_param", type = UiType.TAB, label = "参数")
 
+        // ★ 宿主的功能块就画在这里（SDK v7 的 HOST_SLOT）。
+        //
+        // 里面是：加载 / 合成语音 / 播放 / 停止 / 保存 那一排按钮 +
+        // 目标文本 / 模式 / 参考音频 / 逐字稿 / 种子 / 线程 / CPU-GPU + 进度提示 + 诊断。
+        //
+        // 为什么让宿主画、插件不自己摆：那排按钮背后是宿主的状态机
+        // （引擎是否就绪、是否正在合成、参考音频的 FD、存到音乐库），
+        // 插件重画就得把这些也搬过来，两边各存一份必然打架。这里只换挂载点。
+        //
+        // 只在「参数」页放一个：宿主只认第一个，多放几个也只生效第一个。
+        items += UiItem(key = "host", type = UiType.HOST_SLOT)
+
         items += UiItem(
             key = "param_note", type = UiType.INFO,
-            label = "**目标文本、合成模式（普通 / 克隆 / 极致克隆）、参考音频、逐字稿**" +
-                "在页面顶部「功能」区的参数里，由 Ponko 提供 —— 那是「这一次怎么发」，" +
-                "宿主才是发起方。下面这些是插件自己的默认值，会真的进推理。",
+            label = "上面那块（目标文本 / 模式 / 参考音频 / 逐字稿 / 种子 / 线程）由 Ponko 提供，" +
+                "那是「这一次怎么发」。下面这些是插件自己的默认值，会真的进推理。",
         )
 
-        items += UiItem(key = "sec_param", type = UiType.SECTION, label = "合成参数")
+        items += UiItem(key = "sec_param", type = UiType.SECTION, label = "插件默认值")
         items += UiItem(
             key = "voice", type = UiType.TEXTAREA, label = "语音设计描述（默认）",
             help = "只在宿主没给描述时生效。会拼成「(描述)正文」，相当于凭空造一个音色；留空用模型自带音色",
@@ -1006,22 +1041,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
             key = "steps", type = UiType.TEXT, label = "扩散步数",
             help = stepsHint.ifEmpty { "4 ~ 24 的整数，10 起步；调高更细腻，但也更慢" },
             value = timesteps.toString(),
-        )
-        items += UiItem(
-            key = "seed", type = UiType.TEXT, label = "随机种子",
-            help = seedHint.ifEmpty {
-                "空 = 随机（每次都不一样）。填了固定值就能复现同一段演绎；" +
-                    "合成完的种子会显示在「结果」页"
-            },
-            value = seedText,
-        )
-        items += UiItem(
-            key = "threads", type = UiType.TEXT, label = "推理线程",
-            help = threadsHint.ifEmpty {
-                "空 = 跟随 Ponko 顶部的「推理线程」。填 1~8 会盖过它。" +
-                    "改了要重新加载模型才生效"
-            },
-            value = threadsText,
         )
 
         // ---- 本次推理 ----
@@ -1045,8 +1064,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
             )
         }
 
-        // ---- 诊断（默认展开：宿主的分组没有"默认收起"这个字段）----
-        items += UiItem(key = "g_diag", type = UiType.GROUP_START, label = "诊断信息")
+        // ---- 插件内部状态（默认收起）----
+        //
+        // 和宿主那个「诊断信息」不是一回事：宿主显示的是 `debugInfo` + 最后一条错误，
+        // 这里放的是插件进程自己的设备 / 引擎 / 状态快照，排查"为什么慢、为什么没加载"用。
+        // `value = "collapsed"` 是 SDK v7 起支持的默认收起（用户手动点开过后以用户为准）。
+        items += UiItem(
+            key = "g_diag", type = UiType.GROUP_START,
+            label = "插件内部状态", value = "collapsed",
+        )
         items += UiItem(
             key = "diag_dev", type = UiType.STATUS, label = "设备",
             value = "$devCores 核 · ${devAbi.ifBlank { "未知 ABI" }} · " +
@@ -1067,8 +1093,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         )
         items += UiItem(key = "g_diag_end", type = UiType.GROUP_END)
 
-        // ---- 日志 ----
+        // ---- 日志（也默认收起：平时不用看，出事才展开）----
         val logs = logSnapshotForSchema()
+        items += UiItem(
+            key = "g_log", type = UiType.GROUP_START,
+            label = "运行日志", value = "collapsed",
+        )
         items += UiItem(
             key = KEY_LOG, type = UiType.LOG,
             value = logs,
@@ -1079,6 +1109,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             key = "log_clear", type = UiType.ACTION, label = "清空日志",
             enabled = logs.isNotEmpty(),
         )
+        items += UiItem(key = "g_log_end", type = UiType.GROUP_END)
 
         // ==================== 页 3 · 结果 ====================
         items += UiItem(key = "tab_result", type = UiType.TAB, label = "结果")
@@ -1086,13 +1117,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (lastAudioSec <= 0.0) {
             items += UiItem(
                 key = "res_empty", type = UiType.INFO,
-                label = "还没有推理结果。\n\n到页面顶部「功能」区点「合成语音」，" +
+                label = "还没有推理结果。\n\n到「参数」页点「合成语音」，" +
                     "这里就会出现这次的种子、参数、文本和播放条。",
             )
         } else {
             items += UiItem(
                 key = "res_seed", type = UiType.STATUS, label = "种子",
-                value = "$lastSeed" + if (lastSeed == 0) "" else "（填到「参数」页可复现这一条）",
+                value = "$lastSeed" +
+                    if (lastSeed == 0) "" else "（填到「参数」页的「种子」可复现这一条）",
             )
             items += UiItem(
                 key = "res_param", type = UiType.STATUS, label = "参数",
@@ -1104,23 +1136,27 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 key = "res_text", type = UiType.STATUS, label = "目标文本",
                 value = preview(lastText),
             )
-            // 播放条：宿主的**唯一**那个播放器（它持有最近一次合成的产物）。
+            // 播放条：播的是**宿主**那个播放器（它持有最近一次合成的产物）。
             // 插件在另一个进程，自己播的话退出这一页声音还在响，宿主管不到。
             items += UiItem(
-                key = "audio", type = UiType.AUDIO, label = "音频",
-                help = "和上面「播放」是同一个播放器；这里能拖进度，适合听某一句",
+                key = "audio", type = UiType.AUDIO, label = "这次的结果",
+                help = "能拖进度，适合反复听某一句；「参数」页那几个按钮控制的是同一个播放器",
             )
         }
 
-        // ---- 历史 ----
-        // 只有元数据，**没有播放/保存**：宿主只保留最近一份音频产物，
-        // 一个 MediaPlayer、一个「保存」动作，都只认"上次那次"。
-        // 摆一排各自的播放按钮是自欺欺人 —— 按哪一条都会放最近那份。
+        // ---- 历史（每条都有自己的音频，SDK v7）----
+        //
+        // v7 起宿主支持 `onAudioFile(key, fd, name)`：给某个 AUDIO 条目送它自己的文件，
+        // 那一行播的就是它、播放条上的「保存」存的也是它。
+        // 合成成功时插件已经把 WAV 另存到 `filesDir/hist/` 并通知过宿主
+        // （见 [rememberAudioForHistory]），这里用同一个 key 画播放条就能对上。
+        //
+        // 为什么必须自己留一份：宿主持有的只是"最近一次产物"，再合成一次就覆盖了。
         val hist = historySnapshot()
         if (hist.isNotEmpty()) {
             items += UiItem(
                 key = "sec_hist", type = UiType.SECTION,
-                label = "推理历史（本次运行，最多 $HISTORY_KEEP 条）",
+                label = "推理历史（最多 $HISTORY_KEEP 条 · 每条可单独试听/保存）",
             )
             hist.forEach { r ->
                 items += UiItem(
@@ -1133,12 +1169,20 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     key = "h${r.index}_text", type = UiType.STATUS,
                     label = "文本（${r.chars} 字）", value = r.text,
                 )
+                // 只有真的送过文件的才画：没送成功（或这一版之前生成的老记录）
+                // 画出来也只会放最新那条，那是骗人
+                if (r.hasAudio) {
+                    items += UiItem(
+                        key = historyAudioKey(r.index), type = UiType.AUDIO,
+                        label = "#${r.index} 试听",
+                        help = "播的是这一条自己的音频；旁边「保存」存的也是这一条",
+                    )
+                }
             }
             items += UiItem(
                 key = "hist_note", type = UiType.INFO,
-                label = "历史只记参数和文本：宿主的播放器和「保存」只对**最近一次**生效，" +
-                    "所以这里没有逐条的播放/保存按钮。" +
-                    "想留住某一条，合成完立刻到「功能」区点「保存」。",
+                label = "历史只在本次运行内保留（最多 $HISTORY_KEEP 条），关掉插件进程就清空，" +
+                    "音频文件跟着一起删。想长期留存请点那一条的「保存」，它会进「音乐/Ponko」。",
             )
         }
 
@@ -1158,7 +1202,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val next = when {
             importingRole.isNotEmpty() -> "正在把选的文件复制进插件目录，别离开这一页。"
             downloading -> "正在下载模型（${"%.0f".format(dlPercent)}%），下完就能合成。"
-            ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「合成语音」，" +
+            ready && nativeReady -> "引擎已就绪 —— 到「参数」页点「合成语音」，" +
                 "合成完到「结果」页听（合成不会自动出声）。"
             ready -> "模型文件齐了，还没加载。到「模型」页点「加载模型」（约 10~30 秒），" +
                 "或者直接点「合成语音」—— 它会自己先加载再合成。"
@@ -1227,46 +1271,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 }
                 notifySchemaChanged()
             }
-            "seed" -> {
-                // 空是**合法值**（= 随机），所以这里不像 cfg/steps 那样拒绝空输入
-                val raw = value.trim()
-                when {
-                    raw.isEmpty() -> {
-                        seedText = ""
-                        seedHint = ""
-                        prefs.edit().putString(KEY_SEED, "").apply()
-                    }
-                    raw.toIntOrNull() == null -> seedHint =
-                        "「${raw.take(8)}」不是整数，保留上一个值「$seedText」"
-                    else -> {
-                        seedText = raw.toIntOrNull()!!.coerceAtLeast(0).toString()
-                        seedHint = ""
-                        prefs.edit().putString(KEY_SEED, seedText).apply()
-                    }
-                }
-                notifySchemaChanged()
-            }
-            "threads" -> {
-                val raw = value.trim()
-                when {
-                    raw.isEmpty() || raw == "0" -> {
-                        threadsText = ""
-                        threadsHint = ""
-                        prefs.edit().putString(KEY_THREADS, "").apply()
-                    }
-                    raw.toIntOrNull() == null || raw.toIntOrNull() !in 1..8 -> threadsHint =
-                        "只能填 1~8（或留空）。保留「${threadsText.ifEmpty { "跟随 Ponko" }}」"
-                    else -> {
-                        threadsText = raw
-                        threadsHint = ""
-                        // 改了线程不会立刻生效：nativeInit 只跑一次。
-                        // 必须说清楚，否则用户会以为这一下就变快了
-                        threadsHint = "已保存，下次加载模型生效"
-                        prefs.edit().putString(KEY_THREADS, threadsText).apply()
-                    }
-                }
-                notifySchemaChanged()
-            }
+            // 种子 / 线程不再由插件页接收（v0.6.0）：宿主参数区是唯一入口，
+            // 插件那边只读 `SynthesisRequest.seed` 和 `EngineConfig.threads`
         }
     }
 
@@ -1336,7 +1342,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         notifySchemaChanged()
         Thread({
             try {
-                // config 传空 threads：线程优先级由 [threadsOverride] / 自动估算决定
+                // config 传空 threads：用自动估算（宿主参数区的线程数才是唯一入口）
                 loadEngineBlocking(null, EngineConfig())
             } catch (t: Throwable) {
                 Log.w(TAG, "加载失败", t)
@@ -1558,8 +1564,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
         private const val KEY_CFG = "cfg"
         private const val KEY_STEPS = "steps"
         private const val KEY_VOICE = "voice"
-        private const val KEY_SEED = "seed"
-        private const val KEY_THREADS = "threads"
 
         /** 推理历史留几条。只放内存，关掉进程就没了（见 [Record] 的说明） */
         private const val HISTORY_KEEP = 5

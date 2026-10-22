@@ -10,3 +10,7 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+
+# 产物与构建日志
+dist/
+build_*.log
