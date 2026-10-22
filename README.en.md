@@ -53,11 +53,17 @@ No server, no API key, no telemetry. It works in airplane mode.
 > of them — it loads a model, not an engine, and unloading leaves the file on disk (hence
 > "release"). Play / Stop / Save keep the host defaults.
 
-> **The host has to know v4.** This build is compiled against SDK v4 (log pane / transport
-> bar), so it needs a host that carries the 2026-10-22 SDK v4 update (Ponko 2.0.0).
-> Anything older (`API_MAX_SUPPORTED = 3`) refuses to bind with "plugin SDK v4
-> incompatible" — the gate rejects it before it can hand over a schema, so there is no
-> fallback to plain text.
+> **The host has to know v5.** This build is compiled against SDK v5 (tabs + log pane +
+> transport bar), so it needs a host that carries the 2026-10-22 SDK v5 update. Anything
+> older splits two ways:
+>
+> - v3 or earlier (the build that still rejected anything outside a version range): refuses
+>   to bind with "plugin SDK v5 incompatible" — the gate rejects it before it can hand over
+>   a schema, so there is no fallback.
+> - v4: connects, and the log pane and transport bar work, but it does **not** know the tab
+>   types. The three `TABS_*` items degrade one by one into "unknown control" text blocks,
+>   so you get a few extra placeholder rows and all four pages in one column. Nothing
+>   breaks; it just looks wrong. Either update Ponko or stay on 0.3.x.
 >
 > For the record, the direction is now one-way: since `181dcf5` the host only rejects
 > plugins **older** than its minimum. A plugin newer than the host connects normally and
@@ -101,10 +107,18 @@ so the plugin exposes them in its own UI:
 | Diffusion steps | 10 | 4–24 | More is finer, and linearly slower |
 | Voice design description | empty | — | Equivalent to the host's `voiceDescription`; if both are empty no prefix is added |
 
-The page is ordered the way you use it: a **run status** block at the top (engine /
-weights / storage / device / last synthesis / notices), a **listen** transport bar, then
-**1 · Weights**, **2 · Synthesis parameters**, an explanation block, and **run log** at
-the bottom.
+The page is split into four tabs (SDK v5). Switching is pure visibility, never a rebuild,
+so typed text, slider values and scroll position all survive a switch:
+
+| Tab | Contents |
+|---|---|
+| Status | Engine / weights / storage / device / last synthesis / notices, plus the **listen** transport |
+| Parameters | 1 · Weights (source, per-file state, progress, download / cancel / delete), 2 · Synthesis parameters |
+| Notes | Usage, licence, and the voice-rights reminder |
+| Log | Run log (clearable) |
+
+The tab you were on is remembered: a full repaint (load finished / synthesis started /
+synthesis finished) does not bounce you back to the first tab.
 
 The log is the host's `UiType.LOG` (SDK v4): fixed 160 dp tall, scrolling internally,
 long-press to copy, last 120 lines only. New lines arrive as **incremental patches**

@@ -268,7 +268,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.3.1",
+        versionName = "0.4.0",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -636,9 +636,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 这一版是"状态 + 缺什么补什么"—— 真正的操作（文本、模式、参考音频、合成）
      * 由宿主在页面顶部的「功能」区提供，插件不重复摆一遍。
      *
-     * 分区顺序按**使用顺序**排，不按重要性：
-     * 运行状态（能不能用）→ 试听（上次的结果）→ 1 权重（能不能开始）→
-     * 2 参数（开始前调什么）→ 说明 → 运行日志。
+     * 分区按**使用频率**分页（SDK v5 的标签页），页内仍按使用顺序排：
+     * 状态（每次进来都看：能不能用 + 上次的结果）→
+     * 参数（改一次就很少动：1 权重、2 合成参数）→
+     * 说明（几乎不看）→ 日志（出问题才看）。
+     *
+     * 分页的另一个好处在这里：日志是整页最高的一块（160 dp），
+     * 以前它把页面顶得很长，现在只在需要时出现。
      *
      * ⚠ 这个方法跑在**宿主的 Binder 线程**上，必须快：只读 volatile 缓存 +
      * 几次 `File.length()`。没有网络、没有解码、不调用系统服务
@@ -651,8 +655,21 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         val items = mutableListOf<UiItem>()
 
-        // ==================== 运行状态（只读，一眼判断能不能用）====================
-        items += UiItem(key = "sec_state", type = UiType.SECTION, label = "运行状态")
+        // ==================== v5：标签页 ====================
+        //
+        // 这一页以前是一条长竖列：状态 → 试听 → 权重 → 参数 → 说明 → 日志，
+        // 手机上要滚三四屏。SDK v5 的 TABS_* 把它拆成四页。
+        //
+        // 切换是纯 visibility（宿主一次把所有页建好），所以切回来时输入框内容、
+        // 滑块值、滚动位置都还在。选中哪一页由宿主按 `TABS_START.key` 记住 ——
+        // 整页重画（加载完/合成开始/合成完）之后用户还停在他原来那一页。
+        //
+        // 代价：插件从此报 v5，老宿主（v4 及更早）会把这三个类型逐个降级成
+        // 「未知控件」文字块，界面会散（不会崩）。README 里写明了。
+        items += UiItem(key = "tabs_main", type = UiType.TABS_START, label = "")
+
+        // ---- 页 1 · 状态（一眼判断能不能用）----
+        items += UiItem(key = "tab_state", type = UiType.TAB, label = "状态")
         items += UiItem(
             key = "st_engine", type = UiType.STATUS, label = "引擎",
             value = when {
@@ -691,20 +708,18 @@ class VoxCpm2PluginService : PonkoPluginService() {
             items += UiItem(key = "st_notice", type = UiType.STATUS, label = "提示", value = dlNotice)
         }
 
-        // ==================== 试听（v4：宿主自己的播放器）====================
-        //
-        // `UiType.AUDIO` 播的是**宿主持有**的那份产物（最近一次「合成语音」的结果）。
-        // 插件不传路径、也传不了 —— 它在另一个进程里，自己播的话退出这一页
-        // 声音还在响，宿主管不到别人的 MediaPlayer。
-        //
-        // 上面那个「播放」按钮其实也是同一个播放器，区别在于这里能看时间、
-        // 能拖进度：1~2 分钟合成出来的长音频，想听某一句只能靠拖。
         items += UiItem(key = "sec_play", type = UiType.SECTION, label = "试听")
         items += UiItem(
             key = "audio", type = UiType.AUDIO, label = "最近一次合成",
             help = "和上面「播放」按钮是同一个播放器（宿主提供的），这里能拖进度。" +
                 "还没合成过时是灰的。",
         )
+
+        // ---- 页 2 · 参数 ----
+        //
+        // 状态与参数分两页：
+        // 参数改一次就很少动，状态每次进来都要看。
+        items += UiItem(key = "tab_param", type = UiType.TAB, label = "参数")
 
         // ==================== 1 · 权重 ====================
         items += UiItem(key = "sec_w", type = UiType.SECTION, label = "1 · 权重")
@@ -806,8 +821,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
             )
         }
 
+        // ---- 页 3 · 说明 ----
+        items += UiItem(key = "tab_doc", type = UiType.TAB, label = "说明")
+
         // ==================== 说明 ====================
-        items += UiItem(key = "sec_doc", type = UiType.SECTION, label = "说明")
         items += UiItem(
             key = "help", type = UiType.INFO,
             label = "**手机纯 CPU 推理，很慢**：5 秒语音约 1~2 分钟，生成中点「停止」可以打断。\n\n" +
@@ -829,7 +846,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 "请只克隆自己或已获授权的音色；对外发布合成音频还需按深度合成相关规定做标识。",
         )
 
-        // ==================== 运行日志（v4：真日志框）====================
+        // ---- 页 4 · 日志 ----
         //
         // 以前是「可折叠分组 + 一段 INFO 快照」：内容靠整页重建刷新，日志多了
         // 就是反复拆页面。现在换成 `UiType.LOG` —— 固定高度、内部滚动、
@@ -837,8 +854,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         //
         // `value` 只是**初始内容**（进页面/整页重建时用），之后的变化一律走
         // `notifyUiPatch`，两边的 key 必须都是 [KEY_LOG]。
+        items += UiItem(key = "tab_log", type = UiType.TAB, label = "日志")
         val logs = logSnapshotForSchema()
-        items += UiItem(key = "sec_log", type = UiType.SECTION, label = "运行日志")
         items += UiItem(
             key = KEY_LOG, type = UiType.LOG,
             value = logs,
@@ -849,6 +866,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
             key = "log_clear", type = UiType.ACTION, label = "清空日志",
             enabled = logs.isNotEmpty(),
         )
+
+        // 页签组收尾。缺这一行的话，宿主会继续把后面的项往最后一页里塞
+        items += UiItem(key = "tabs_main_end", type = UiType.TABS_END)
 
         return UiSchema(intro = buildIntro(ready, installed), items = items)
     }
@@ -863,12 +883,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val next = when {
             downloading -> "正在下载权重（${"%.0f".format(dlPercent)}%），下完就能合成。"
             ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「合成语音」，" +
-                "合成完到下面「试听」那条播放器听（合成不会自动出声）。"
+                "合成完到「状态」页的播放条上听（合成不会自动出声）。"
             ready -> "权重已就绪，模型还没加载。点上面「加载模型」（约 10~30 秒），" +
                 "或者直接点「合成语音」—— 它会自己先加载再合成。"
             installed > 0 -> "权重还没下完（已有 ${ModelStore.human(installed)}）。" +
-                "到下面「1 · 权重」点「继续下载」。"
-            else -> "还没下载权重。到下面「1 · 权重」下载（约 3.5 GB），下完才能合成。"
+                "到「参数」页的「1 · 权重」点「继续下载」。"
+            else -> "还没下载权重。到「参数」页下载（约 3.5 GB），下完才能合成。"
         }
         return "VoxCPM2（OpenBMB，2B）本地语音合成：30 种语言、9 种中文方言，" +
             "音色设计与零样本克隆，48 kHz，除下载权重外全程离线。\n\n**$next**"
