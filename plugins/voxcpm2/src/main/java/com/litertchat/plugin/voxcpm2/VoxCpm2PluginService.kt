@@ -130,6 +130,22 @@ class VoxCpm2PluginService : PonkoPluginService() {
     private val logLines = ArrayDeque<String>()
     private val logLock = Any()
 
+    /**
+     * 界面日志框里**已经有几行**（自上次整段重置起）。
+     *
+     * 推补丁时只送这之后的差量。整段替换也能用，但用户往上翻看历史时
+     * 内容会被整体换掉、视线跟着跑 —— 宿主那边「只在停在底部时才跟随滚动」
+     * 的设计就是为这个做的，整段替换绕过它。
+     */
+    @Volatile private var pushedLines = 0
+
+    /**
+     * 缓冲被裁剪过（超过 [LOG_KEEP] 丢过最老的行）。
+     *
+     * 一旦裁剪，界面上的行数与缓冲就对不上了，差量算不出来 —— 只能整段重置一次。
+     */
+    @Volatile private var logTrimmed = false
+
     /** 上次把日志推给界面的时刻（节流用，见 [pushLog]） */
     @Volatile private var lastLogPushAt = 0L
 
@@ -144,7 +160,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         synchronized(logLock) {
             logLines.addLast("$ts  $msg")
-            while (logLines.size > LOG_KEEP) logLines.removeFirst()
+            while (logLines.size > LOG_KEEP) {
+                logLines.removeFirst()
+                // 丢了最老的 → 界面上那几行成了孤儿，差量算不准，下次推整段
+                logTrimmed = true
+            }
         }
         Log.i(TAG, msg)
         pushLog()
@@ -153,13 +173,17 @@ class VoxCpm2PluginService : PonkoPluginService() {
     /**
      * 把日志缓冲推给日志框。
      *
-     * ## 为什么推整段快照而不是"只推新行"
+     * ## 常规是"只推新行"，裁剪之后才整段重置
      *
-     * 两个理由：
-     * · 缓冲满 [LOG_KEEP] 行后会丢最老的，只追加的话界面上的行数会无限涨；
-     * · 整段替换是幂等的，不需要维护"界面上已经有哪几行"的游标 ——
-     *   页面重建和补丁交错时，游标一定会算错，表现是漏行或重复行。
-     * 120 行约 8 KB，250 ms 一次，对 Binder 配额没有压力。
+     * 宿主（2026-10-22 起）的跟随规则是：**追加时，只有用户本来就停在底部才滚到最新**。
+     * 这要求插件送的是真追加 —— 每次推整段快照的话，用户翻上去看历史时内容会被
+     * 整体换掉（位置不变但行变了），跟"自动滚到底"一样烦。
+     *
+     * 但差量要一个游标（[pushedLines]），而缓冲满了会丢最老的行，那时游标失效：
+     * 所以只有 [logTrimmed] 为真时才整段重置一次，把界面砍回 [LOG_KEEP] 行。
+     *
+     * 页面重建（`notifySchemaChanged()`）时界面日志会被换成 schema 里的快照，
+     * [logSnapshotForSchema] 会把游标一起对齐，避免重建后重复推同一行。
      *
      * ## 为什么要节流又想得起补推
      *
@@ -176,11 +200,41 @@ class VoxCpm2PluginService : PonkoPluginService() {
         }
         mainHandler.removeCallbacks(flushLogTask)
         lastLogPushAt = now
-        notifyUiPatch(KEY_LOG, logSnapshot(), false)
+
+        // 取差量与推进游标必须是同一把锁里的一步 ——
+        // 分开做的话，两条日志并发进来会算重或漏
+        val out = synchronized(logLock) {
+            val size = logLines.size
+            when {
+                logTrimmed -> {
+                    val whole = logLines.joinToString("\n")
+                    logTrimmed = false
+                    pushedLines = size
+                    whole to false
+                }
+                size > pushedLines -> {
+                    val fresh = logLines.toList().subList(pushedLines, size).joinToString("\n")
+                    // 首行没有前文，别送一个空行开头
+                    val payload = if (pushedLines == 0) fresh else "\n$fresh"
+                    pushedLines = size
+                    payload to true
+                }
+                else -> null
+            }
+        } ?: return
+        notifyUiPatch(KEY_LOG, out.first, out.second)
     }
 
-    private fun logSnapshot(): String = synchronized(logLock) {
-        if (logLines.isEmpty()) "" else logLines.toList().takeLast(LOG_KEEP).joinToString("\n")
+    /**
+     * 给 schema 用的整段快照，**同时把游标对齐到它**。
+     *
+     * 两件事必须在同一把锁里做：先取快照再记行数，中间插进来的一行会被
+     * 当成"已经送过"，从此丢掉；反过来则会在重建后重复推。
+     */
+    private fun logSnapshotForSchema(): String = synchronized(logLock) {
+        pushedLines = logLines.size
+        logTrimmed = false
+        if (logLines.isEmpty()) "" else logLines.joinToString("\n")
     }
 
     private fun refreshDeviceStats() {
@@ -214,7 +268,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.3.0",
+        versionName = "0.3.1",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -783,7 +837,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         //
         // `value` 只是**初始内容**（进页面/整页重建时用），之后的变化一律走
         // `notifyUiPatch`，两边的 key 必须都是 [KEY_LOG]。
-        val logs = logSnapshot()
+        val logs = logSnapshotForSchema()
         items += UiItem(key = "sec_log", type = UiType.SECTION, label = "运行日志")
         items += UiItem(
             key = KEY_LOG, type = UiType.LOG,
@@ -906,7 +960,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 notifySchemaChanged()
             }
             "log_clear" -> {
-                synchronized(logLock) { logLines.clear() }
+                synchronized(logLock) {
+                    logLines.clear()
+                    pushedLines = 0
+                    logTrimmed = false
+                }
                 notifySchemaChanged()
             }
         }

@@ -110,6 +110,8 @@ The log is the host's `UiType.LOG` (SDK v4): fixed 160 dp tall, scrolling intern
 long-press to copy, last 120 lines only. New lines arrive as **incremental patches**
 (`notifyUiPatch`) rather than a full page rebuild — so the log keeps its scroll position
 and the *voice design* textarea you are typing into keeps its focus and content.
+Scrolling back through history is safe too: new lines don't yank you to the bottom (the
+host only follows the tail when the pane was already there).
 Download progress works the same way: it only touches the progress bar.
 
 ## The three modes
