@@ -3,6 +3,8 @@ package com.litertchat.plugin.voxcpm2
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
@@ -68,15 +70,28 @@ class VoxCpm2PluginService : PonkoPluginService() {
     private val dlCancel = AtomicBoolean(false)
     @Volatile private var dlThread: Thread? = null
 
-    /** 上次通知宿主重画的时刻；进度回调很密，不节流会把整页刷得很卡 */
-    @Volatile private var lastNotifyAt = 0L
+    /** 上次推下载进度的时刻（节流用，见 [pushDownloadProgress]） */
+    @Volatile private var lastDlPushAt = 0L
 
-    private fun notifyThrottled() {
+    /**
+     * 下载进度：推给进度条和当前文件那一行（都是**原地补丁**）。
+     *
+     * 下载回调一秒来几十次。以前这里是"每秒整页重建一次"，代价是日志滚动位置
+     * 和用户正在填的音色描述每次都被冲掉 —— 宿主 v4 给了 `onUiPatch` 之后
+     * 就不该再这么干了：两个 key 各改各的，别的控件一动不动。
+     *
+     * 仍然要节流：`onUiPatch` 是 oneway、没有背压。
+     */
+    private fun pushDownloadProgress(spec: ModelStore.Spec, got: Long, total: Long) {
         val now = SystemClock.elapsedRealtime()
-        // 1 秒一次：这一页有三十来个控件，重画是**整页重建**，再密就不值得了
-        if (now - lastNotifyAt < 1_000) return
-        lastNotifyAt = now
-        notifySchemaChanged()
+        if (now - lastDlPushAt < DL_PUSH_INTERVAL_MS) return
+        lastDlPushAt = now
+        notifyUiPatch(KEY_DL_PROGRESS, "%.1f".format(dlPercent), false)
+        notifyUiPatch(
+            "${KEY_FILE_PREFIX}${spec.fileName}",
+            "下载中 · ${ModelStore.human(got)} / ${ModelStore.human(total)}",
+            false,
+        )
     }
 
     // ---- 设置项（宿主不持久化，所以值由插件自己存）----
@@ -107,12 +122,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     // ---- 界面日志 ----
     //
-    // 宿主没有"流式日志"控件（只有一次性 INFO），所以这里自己攒一小段环形缓冲，
-    // 每次重画时快照最后 N 行。用户装不了 adb，这一块就是他能拿到的全部现场。
+    // 宿主从 SDK v4（2026-10-22）起给了 `UiType.LOG`：固定 160dp 高、内部自己滚、
+    // 长按可复制的只读框，内容靠 `onUiPatch` 送 —— **不再整页重画**。
+    // 这一点是关键：以前的 Info 快照只能靠 `notifySchemaChanged()` 刷新，
+    // 那是 `removeAllViews()` 全量重建，日志一多就是"每来一行把整页拆一遍"，
+    // 滚动位置、正在编辑的 TEXTAREA 全被冲掉。
     private val logLines = ArrayDeque<String>()
     private val logLock = Any()
 
-    /** 写一行界面日志。**不触发重画** —— 重画由调用方在粗粒度节点自己决定 */
+    /** 上次把日志推给界面的时刻（节流用，见 [pushLog]） */
+    @Volatile private var lastLogPushAt = 0L
+
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+    /** 被节流掉的那一行留在缓冲里，靠这个延迟任务补推一次 */
+    private val flushLogTask = Runnable { pushLog(force = true) }
+
+    /** 写一行界面日志，并**单独**把日志框更新掉（不重画别的控件） */
     private fun logLine(msg: String) {
         // 不用 String.format("%tH")：Kotlin 会把 $tH 当成字符串模板
         val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
@@ -121,10 +147,40 @@ class VoxCpm2PluginService : PonkoPluginService() {
             while (logLines.size > LOG_KEEP) logLines.removeFirst()
         }
         Log.i(TAG, msg)
+        pushLog()
+    }
+
+    /**
+     * 把日志缓冲推给日志框。
+     *
+     * ## 为什么推整段快照而不是"只推新行"
+     *
+     * 两个理由：
+     * · 缓冲满 [LOG_KEEP] 行后会丢最老的，只追加的话界面上的行数会无限涨；
+     * · 整段替换是幂等的，不需要维护"界面上已经有哪几行"的游标 ——
+     *   页面重建和补丁交错时，游标一定会算错，表现是漏行或重复行。
+     * 120 行约 8 KB，250 ms 一次，对 Binder 配额没有压力。
+     *
+     * ## 为什么要节流又想得起补推
+     *
+     * `onUiPatch` 是 `oneway`、**没有背压**，下载/推理时回调来得比这快得多。
+     * 但直接丢掉被节流的那次也不行 —— 如果之后没有新日志（比如最后一行是
+     * "下载完成"），那一行就永远不出现了。所以被节流时挂一个延迟任务补推。
+     */
+    private fun pushLog(force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastLogPushAt < LOG_PUSH_INTERVAL_MS) {
+            mainHandler.removeCallbacks(flushLogTask)
+            mainHandler.postDelayed(flushLogTask, LOG_PUSH_INTERVAL_MS)
+            return
+        }
+        mainHandler.removeCallbacks(flushLogTask)
+        lastLogPushAt = now
+        notifyUiPatch(KEY_LOG, logSnapshot(), false)
     }
 
     private fun logSnapshot(): String = synchronized(logLock) {
-        if (logLines.isEmpty()) "" else logLines.toList().takeLast(LOG_SHOW).joinToString("\n")
+        if (logLines.isEmpty()) "" else logLines.toList().takeLast(LOG_KEEP).joinToString("\n")
     }
 
     private fun refreshDeviceStats() {
@@ -158,7 +214,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.2.4",
+        versionName = "0.3.0",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -527,7 +583,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 由宿主在页面顶部的「功能」区提供，插件不重复摆一遍。
      *
      * 分区顺序按**使用顺序**排，不按重要性：
-     * 运行状态（能不能用）→ 1 权重（能不能开始）→ 2 参数（开始前调什么）→ 说明 → 日志。
+     * 运行状态（能不能用）→ 试听（上次的结果）→ 1 权重（能不能开始）→
+     * 2 参数（开始前调什么）→ 说明 → 运行日志。
      *
      * ⚠ 这个方法跑在**宿主的 Binder 线程**上，必须快：只读 volatile 缓存 +
      * 几次 `File.length()`。没有网络、没有解码、不调用系统服务
@@ -580,6 +637,21 @@ class VoxCpm2PluginService : PonkoPluginService() {
             items += UiItem(key = "st_notice", type = UiType.STATUS, label = "提示", value = dlNotice)
         }
 
+        // ==================== 试听（v4：宿主自己的播放器）====================
+        //
+        // `UiType.AUDIO` 播的是**宿主持有**的那份产物（最近一次「合成语音」的结果）。
+        // 插件不传路径、也传不了 —— 它在另一个进程里，自己播的话退出这一页
+        // 声音还在响，宿主管不到别人的 MediaPlayer。
+        //
+        // 上面那个「播放」按钮其实也是同一个播放器，区别在于这里能看时间、
+        // 能拖进度：1~2 分钟合成出来的长音频，想听某一句只能靠拖。
+        items += UiItem(key = "sec_play", type = UiType.SECTION, label = "试听")
+        items += UiItem(
+            key = "audio", type = UiType.AUDIO, label = "最近一次合成",
+            help = "和上面「播放」按钮是同一个播放器（宿主提供的），这里能拖进度。" +
+                "还没合成过时是灰的。",
+        )
+
         // ==================== 1 · 权重 ====================
         items += UiItem(key = "sec_w", type = UiType.SECTION, label = "1 · 权重")
 
@@ -604,7 +676,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 else -> "未下载 · ${ModelStore.human(spec.bytes)}"
             }
             items += UiItem(
-                key = "file_${spec.fileName}", type = UiType.STATUS,
+                key = "$KEY_FILE_PREFIX${spec.fileName}", type = UiType.STATUS,
                 label = spec.label, value = state,
             )
         }
@@ -612,7 +684,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 没下过也没在下的时候不摆一条 0% 的空进度条
         if (downloading || installed > 0) {
             items += UiItem(
-                key = "dl_progress", type = UiType.PROGRESS, label = "下载进度",
+                key = KEY_DL_PROGRESS, type = UiType.PROGRESS, label = "下载进度",
                 help = if (downloading && dlDetail.isNotEmpty()) dlDetail
                 else "支持断点续传：中断后再点一次会从断点接着下",
                 value = "%.1f".format(if (downloading) dlPercent else if (ready) 100.0 else 0.0),
@@ -691,8 +763,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 "极致克隆（参考音频 + 逐字稿，最像）。\n\n" +
                 "首次「加载模型」约 10~30 秒，之后一直留着（重复点只会立刻返回）。" +
                 "想腾内存点「释放模型」，或在卡片上停用插件。\n\n" +
-                "「合成语音」只跑推理、产出文件，**不会自动出声** —— 合成完点「播放」才听得到。" +
-                "听第二遍也点「播放」，它直接放上一次的文件，不重新推理（重新推理要再等一两分钟）。",
+                "「合成语音」只跑推理、产出文件，**不会自动出声** —— 合成完到「试听」那条播放器" +
+                "上点播放（拖动进度条能跳到某一句），或者直接点上面的「播放」，两者是同一个播放器。" +
+                "听第二遍不用重新推理，它直接放上一次的文件（重新推理要再等一两分钟）。",
         )
         items += UiItem(
             key = "license", type = UiType.INFO,
@@ -702,19 +775,26 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 "请只克隆自己或已获授权的音色；对外发布合成音频还需按深度合成相关规定做标识。",
         )
 
-        // ==================== 日志 ====================
+        // ==================== 运行日志（v4：真日志框）====================
+        //
+        // 以前是「可折叠分组 + 一段 INFO 快照」：内容靠整页重建刷新，日志多了
+        // 就是反复拆页面。现在换成 `UiType.LOG` —— 固定高度、内部滚动、
+        // 可长按复制，新行走 [pushLog] 增量送。
+        //
+        // `value` 只是**初始内容**（进页面/整页重建时用），之后的变化一律走
+        // `notifyUiPatch`，两边的 key 必须都是 [KEY_LOG]。
         val logs = logSnapshot()
-        items += UiItem(key = "g_log", type = UiType.GROUP_START, label = "日志")
+        items += UiItem(key = "sec_log", type = UiType.SECTION, label = "运行日志")
         items += UiItem(
-            key = "log_body", type = UiType.INFO,
-            label = if (logs.isEmpty()) "（暂无日志）" else logs,
+            key = KEY_LOG, type = UiType.LOG,
+            value = logs,
+            help = "长按可复制。只保留最近 $LOG_KEEP 行；这和 logcat 是两回事，" +
+                "两个都有：adb logcat -s VoxCpm2Plugin",
         )
         items += UiItem(
             key = "log_clear", type = UiType.ACTION, label = "清空日志",
-            help = "只清这一页的记录，不影响 logcat：adb logcat -s VoxCpm2Plugin",
             enabled = logs.isNotEmpty(),
         )
-        items += UiItem(key = "g_log_end", type = UiType.GROUP_END)
 
         return UiSchema(intro = buildIntro(ready, installed), items = items)
     }
@@ -729,7 +809,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val next = when {
             downloading -> "正在下载权重（${"%.0f".format(dlPercent)}%），下完就能合成。"
             ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「合成语音」，" +
-                "合成完再点「播放」（合成不会自动出声）。"
+                "合成完到下面「试听」那条播放器听（合成不会自动出声）。"
             ready -> "权重已就绪，模型还没加载。点上面「加载模型」（约 10~30 秒），" +
                 "或者直接点「合成语音」—— 它会自己先加载再合成。"
             installed > 0 -> "权重还没下完（已有 ${ModelStore.human(installed)}）。" +
@@ -872,19 +952,25 @@ class VoxCpm2PluginService : PonkoPluginService() {
                         dlPercent = overall.coerceIn(0.0, 100.0)
                         dlDetail = "${spec.label}：${ModelStore.human(got)} / ${ModelStore.human(total)}" +
                             "（总进度 ${"%.0f".format(overall)}%）"
-                        // 日志每 10% 记一行 —— 界面重画是整页重建，跟着每 400ms 的进度刷不划算
+                        // 日志每 10% 记一行 —— 日志框现在是增量追加的，不心疼；
+                        // 但 10% 一条已经够看清进度了，再密就是噪声
                         if (overall - loggedPct >= 10.0) {
                             loggedPct = overall
                             logLine("下载 ${"%.0f".format(overall)}% · ${spec.label} " +
                                 "${ModelStore.human(got)}/${ModelStore.human(total)}")
                         }
-                        notifyThrottled()
+                        // 进度**走原地补丁**，不再整页重建：这个回调一秒来几十次，
+                        // 每次重建都会把日志滚动位置和正在填的音色描述冲掉
+                        pushDownloadProgress(spec, got, total)
                     }
                     if (r.isFailure) {
                         failed = r.exceptionOrNull()?.message ?: "下载失败"
                         break
                     }
                     done += spec.bytes
+                    // 一个文件下完了：这一行从"下载中"变成"已就绪"，
+                    // 得整页刷一次才对得上（补丁只能改值，改不了行的存在与否）
+                    notifySchemaChanged()
                 }
             } catch (t: Throwable) {
                 failed = t.message ?: "下载异常"
@@ -925,8 +1011,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
         /** 内存里最多留多少行日志（再多也就是滚动噪声） */
         private const val LOG_KEEP = 120
 
-        /** 界面上一屏最多显示最新的多少行 */
-        private const val LOG_SHOW = 24
+        // ---- 要打补丁的 key：**必须和 schema 里那个 UiItem.key 一模一样** ----
+        // 对不上宿主就静默忽略（它不去猜"你大概想改哪个"），所以只写在这个常量里，
+        // 别在 schema 和补丁两处各写一遍字面量。
+        private const val KEY_LOG = "log_body"
+        private const val KEY_DL_PROGRESS = "dl_progress"
+        private const val KEY_FILE_PREFIX = "file_"
+
+        /**
+         * 日志推送间隔。
+         *
+         * `onUiPatch` 是 oneway、没有背压，宿主处理慢于插件时消息会在它那边排队。
+         * 250 ms 对人眼已经是"实时"了，再密只是压 Binder 配额。
+         */
+        private const val LOG_PUSH_INTERVAL_MS = 250L
+
+        /** 下载进度推送间隔（回调本身每秒几十次，同理节流） */
+        private const val DL_PUSH_INTERVAL_MS = 300L
 
         /**
          * 卸载后延迟多久再通知界面重画。

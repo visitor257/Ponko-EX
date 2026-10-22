@@ -44,14 +44,19 @@ No server, no API key, no telemetry. It works in airplane mode.
 > file **without re-running inference** — five seconds of speech takes 1–2 minutes on a
 > phone, so don't reach for Synthesise just to hear the same line again.
 >
+> The page also carries a **"listen" transport bar** (SDK v4 `UiType.AUDIO`). It drives the
+> **same player** as the Play button above it (the host's own), but you can see the time and
+> drag the position — the only way to get to one sentence in a one-to-two-minute clip.
+>
 > The plugin names those buttons (SDK v3 `buildActionLabels()`). The host's defaults are
 > *Load engine / Unload engine / Synthesise / Play / Stop / Save*; this plugin overrides two
 > of them — it loads a model, not an engine, and unloading leaves the file on disk (hence
 > "release"). Play / Stop / Save keep the host defaults.
 
-> **Update the host first.** This build reports SDK v3 (the button-label capability).
-> An older host (`API_MAX_SUPPORTED = 2`) refuses to bind and shows
-> "plugin SDK v3 incompatible" — it does not fall back to default labels.
+> **Update the host first.** This build reports SDK v4 (log pane / transport bar).
+> An older host (`API_MAX_SUPPORTED = 3`) refuses to bind and says
+> "plugin SDK v4 incompatible" — there is **no** graceful fallback here, because the
+> version gate rejects the plugin before it can render anything.
 
 > **The signature must match the host.** Ponko protects plugin binding with a
 > `signature`-level permission, so a mismatched key makes `bindService` throw
@@ -91,8 +96,15 @@ so the plugin exposes them in its own UI:
 | Voice design description | empty | — | Equivalent to the host's `voiceDescription`; if both are empty no prefix is added |
 
 The page is ordered the way you use it: a **run status** block at the top (engine /
-weights / storage / device / last synthesis / notices), then **1 · Weights** and
-**2 · Synthesis parameters**, and a collapsible log (latest 24 lines + clear).
+weights / storage / device / last synthesis / notices), a **listen** transport bar, then
+**1 · Weights**, **2 · Synthesis parameters**, an explanation block, and **run log** at
+the bottom.
+
+The log is the host's `UiType.LOG` (SDK v4): fixed 160 dp tall, scrolling internally,
+long-press to copy, last 120 lines only. New lines arrive as **incremental patches**
+(`notifyUiPatch`) rather than a full page rebuild — so the log keeps its scroll position
+and the *voice design* textarea you are typing into keeps its focus and content.
+Download progress works the same way: it only touches the progress bar.
 
 ## The three modes
 
