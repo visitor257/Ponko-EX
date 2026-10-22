@@ -38,15 +38,16 @@ No server, no API key, no telemetry. It works in airplane mode.
 > Tapping **Synthesise** works too (it loads first, then synthesises), you just don't get a
 > load-progress view. Tap **Release model** whenever you want the memory back.
 
-> The action row reads `Load/Release model · Synthesise (becomes "Synthesise again" once
-> there is output) · Replay · Stop · Save`. **Replay only plays the last file — it does not
-> re-run inference.** Five seconds of speech takes 1–2 minutes on a phone, so do not reach
-> for "Synthesise again" just to hear the same line.
+> The action row is **one action per button**: `Load/Release model · Synthesise · Play ·
+> Stop · Save`. **Synthesise only runs inference and writes a file — it makes no sound**;
+> tap **Play** afterwards to hear it (the host's hint says so too). Play replays the last
+> file **without re-running inference** — five seconds of speech takes 1–2 minutes on a
+> phone, so don't reach for Synthesise just to hear the same line again.
 >
 > The plugin names those buttons (SDK v3 `buildActionLabels()`). The host's defaults are
-> *Load engine / Unload engine / Preview / Re-synthesise / Play / Stop / Save*; this plugin
-> uses more specific words — it loads a model, not an engine; unloading leaves the file on
-> disk (hence "release"); and "preview" actually runs a full inference (hence "synthesise").
+> *Load engine / Unload engine / Synthesise / Play / Stop / Save*; this plugin overrides two
+> of them — it loads a model, not an engine, and unloading leaves the file on disk (hence
+> "release"). Play / Stop / Save keep the host defaults.
 
 > **Update the host first.** This build reports SDK v3 (the button-label capability).
 > An older host (`API_MAX_SUPPORTED = 2`) refuses to bind and shows
@@ -60,9 +61,9 @@ No server, no API key, no telemetry. It works in airplane mode.
 
 ## Using it
 
-### Host side: preview parameters
+### Host side: synthesis parameters
 
-Ponko 2.0.0's plugin page has a *preview parameters* block, and these values really do
+Ponko 2.0.0's plugin page has a *synthesis parameters* block, and these values really do
 reach `SynthesisRequest`:
 
 | Parameter | Notes |
@@ -173,8 +174,8 @@ To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxC
 - **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
 - **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
 - **One download source** — ModelScope only, no hf-mirror fallback
-- **Replay keeps only the latest file** — the host stores "the last thing that was
-  synthesised", so synthesising again replaces it, and *Replay* greys out for other plugins.
+- **Play keeps only the latest file** — the host stores "the last thing that was
+  synthesised", so synthesising again replaces it, and *Play* greys out for other plugins.
   Tap *Save* for anything worth keeping (it lands in `Music/Ponko`)
 - **Long text is slow** — there is no hard character cap (the plugin never truncates), but
   phone RTF is 10–30, so 40 characters is already minutes

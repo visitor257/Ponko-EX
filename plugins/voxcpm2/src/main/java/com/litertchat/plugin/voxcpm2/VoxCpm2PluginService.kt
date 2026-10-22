@@ -158,7 +158,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.2.3",
+        versionName = "0.2.4",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -491,17 +491,24 @@ class VoxCpm2PluginService : PonkoPluginService() {
     /**
      * 功能区那几个按钮叫什么（SDK v3 起可改，只改文字）。
      *
-     * 宿主默认是「加载引擎 / 卸载引擎 / 试听 / 重新合成 / 播放 / 停止 / 保存」——
-     * 那套词是按"有个引擎要加载"写的，放到这个插件上有两处不贴：
+     * 宿主默认是「加载引擎 / 卸载引擎 / 合成 / 播放 / 停止 / 保存」——
+     * 前两个是按"有个引擎要加载"写的，放到这个插件上不贴：
      *
      * - 这里加载的是 **3.5 GB 的模型**，说「模型」比「引擎」具体；卸载之后
      *   东西还在磁盘上，说「释放模型」比「卸载」准确（宿主的「卸载」很容易被
      *   理解成卸载插件）。
-     * - 「试听」听起来只是放声音，实际是**跑一遍推理**（1~2 分钟）。改成
-     *   「合成语音」，再加上有产物后变成「再合成一次」，就不会有人以为点它
-     *   只是重放 —— 重放是另一个按钮「重放」。
+     * - 「合成」改成「合成语音」，和上面两个「…模型」排在一起时更成句。
      *
-     * 停止 / 保存用宿主默认：本来就是这两个词。
+     * 播放 / 停止 / 保存用宿主默认：「播放」本来就准确。
+     *
+     * ## 2026-10-22 宿主把合成与播放拆开了
+     *
+     * 以前合成完会自动播，同一个按钮因此有了第二重含义（还没听过 = 听，
+     * 听过了 = 再算一遍），菜加了 `preview.again` 让它变成「重新合成」。
+     * 现在合成只产文件、不播放，「点几次都是同一个动作」，那个 key 被删了，
+     * `ActionLabel.PREVIEW` 也改名成 [ActionLabel.REASONING]。
+     * 所以这里不再有 `.again` 那一行，也不该有 —— 但**说明区必须告诉用户
+     * 合成完不出声、要去点「播放」**，否则会以为没成功。
      *
      * ⚠ 长度上限 [ActionLabel.MAX_LEN]（12 字符，超了整个丢弃）；这个方法在
      * 打开界面时于 Binder 线程调用，所以只能是常量 map，不能做 IO。
@@ -509,9 +516,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun buildActionLabels(): Map<String, String> = mapOf(
         ActionLabel.ENGINE_LOAD to "加载模型",
         ActionLabel.ENGINE_UNLOAD to "释放模型",
-        ActionLabel.PREVIEW to "合成语音",
-        ActionLabel.PREVIEW_AGAIN to "再合成一次",
-        ActionLabel.PLAY to "重放",
+        ActionLabel.REASONING to "合成语音",
     )
 
     /**
@@ -686,8 +691,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 "极致克隆（参考音频 + 逐字稿，最像）。\n\n" +
                 "首次「加载模型」约 10~30 秒，之后一直留着（重复点只会立刻返回）。" +
                 "想腾内存点「释放模型」，或在卡片上停用插件。\n\n" +
-                "「合成语音」= 跑一遍推理；合成过一次之后它会变成「再合成一次」。" +
-                "只想再听一遍就点「重放」—— 那才是直接放上一次的文件，不重新推理。",
+                "「合成语音」只跑推理、产出文件，**不会自动出声** —— 合成完点「播放」才听得到。" +
+                "听第二遍也点「播放」，它直接放上一次的文件，不重新推理（重新推理要再等一两分钟）。",
         )
         items += UiItem(
             key = "license", type = UiType.INFO,
@@ -723,7 +728,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
     private fun buildIntro(ready: Boolean, installed: Long): String {
         val next = when {
             downloading -> "正在下载权重（${"%.0f".format(dlPercent)}%），下完就能合成。"
-            ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「合成语音」。"
+            ready && nativeReady -> "引擎已就绪 —— 去上面的「功能」区点「合成语音」，" +
+                "合成完再点「播放」（合成不会自动出声）。"
             ready -> "权重已就绪，模型还没加载。点上面「加载模型」（约 10~30 秒），" +
                 "或者直接点「合成语音」—— 它会自己先加载再合成。"
             installed > 0 -> "权重还没下完（已有 ${ModelStore.human(installed)}）。" +
