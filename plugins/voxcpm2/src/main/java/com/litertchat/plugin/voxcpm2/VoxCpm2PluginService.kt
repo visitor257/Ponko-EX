@@ -55,8 +55,21 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     // ---- 引擎状态：全部是 volatile，因为 getSettingsSchema() 跑在宿主 Binder 线程上 ----
     @Volatile private var nativeReady = false
-    /** 「释放模型」点下去之后、原生真的 free 完之前的短暂状态 */
-    @Volatile private var engineUnloading = false
+    /**
+     * 「正在释放」的起点（`elapsedRealtime`，0 = 不在释放）。
+     *
+     * 以前是个布尔，只靠"延迟 600 ms"那个线程复位。那个线程一旦没跑成
+     * （进程被杀、宿主提前解绑、线程池回收），标记就永久停在 true：
+     * `en_load` 一直灰着，`loadFromUi` 又直接 return 不写日志 ——
+     * 用户看到的就是**"点加载没反应"**，而且一点线索都没有。
+     * 改成带超时的时间戳，最坏情况 [UNLOAD_GRACE_MS] 之后自己失效。
+     */
+    @Volatile private var unloadingSince = 0L
+
+    private val engineUnloading: Boolean
+        get() = unloadingSince > 0L &&
+            SystemClock.elapsedRealtime() - unloadingSince < UNLOAD_GRACE_MS
+
     /**
      * 加载线程正在跑。
      *
@@ -428,7 +441,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
         displayName = "VoxCPM2 语音合成",
-        versionName = "0.5.0",
+        // 和 plugins/voxcpm2/build.gradle.kts 的 versionName 保持一致。
+        // 以前这里停在 "0.5.0" 没跟着动，插件卡片上显示的版本号是假的。
+        versionName = "0.7.3",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -443,7 +458,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun loadEngineBlocking(models: ModelBundle?, config: EngineConfig): EngineInfo {
         val t0 = SystemClock.elapsedRealtime()
         // 卸载后 600 ms 内又点了加载：把"正在释放"清掉，否则界面会一直显示它
-        engineUnloading = false
+        unloadingSince = 0L
 
         // 本地导入优先，其次任何一套已经下完整的（见 ModelStore.ready）
         val chosen = ModelStore.ready(this, versionKey)
@@ -456,7 +471,34 @@ class VoxCpm2PluginService : PonkoPluginService() {
             }
 
         if (VoxCpm2Bridge.nativeIsReady()) {
-            // 已经加载过（幂等）：不重复 init，直接回报
+            // 原生层已经加载过（幂等）：不重复 init，直接回报。
+            //
+            // ⚠ 但**必须把 Kotlin 侧的状态补齐**。以前这里直接 return，而
+            // `nativeReady` 还是 false —— 界面继续写"未加载 · 点加载"、按钮继续
+            // 可点，用户再点一次还是走这条路，永远到不了 `nativeInit`。
+            // 现象就是**「点加载没反应」**，而且日志里一行都没有。
+            //
+            // 什么时候会走到？`nativeReady` 与原生状态对不上：
+            //   · `nativeFree()` 抛过异常（被下面的 runCatching 吞掉）——
+            //     Kotlin 认为已释放，原生其实还活着
+            //   · 用户释放后立刻又点加载，原生还没 free 完
+            //   · 宿主断开重连换了实例：原生库是进程级的，初始化状态还在
+            if (!nativeReady) {
+                sampleRate = VoxCpm2Bridge.nativeSampleRate().takeIf { it > 0 } ?: sampleRate
+                if (loadedBytes <= 0L) loadedBytes = chosen.bytes
+                if (loadedSourceKey.isEmpty()) loadedSourceKey = chosen.origin
+                if (loadedThreads <= 0) {
+                    loadedThreads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 6)
+                }
+                nativeReady = true
+                refreshDeviceStats()
+                logLine(
+                    "原生层已就绪但界面状态掉了，补同步：${chosen.origin} · " +
+                        "${ModelStore.human(loadedBytes)} · $loadedThreads 线程 · ${sampleRate / 1000} kHz"
+                )
+                // 这一声必须喊：按钮要从"可点"翻成"已就绪"
+                notifySchemaChanged()
+            }
             return EngineInfo(sampleRate, 1, loadedBytes, SystemClock.elapsedRealtime() - t0)
         }
 
@@ -515,7 +557,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     override fun closeEngineBlocking() {
         // 幂等：用户点「释放模型」、停用插件、页面销毁、进程回收都会调
         val wasReady = nativeReady
-        engineUnloading = wasReady
+        unloadingSince = if (wasReady) SystemClock.elapsedRealtime() else 0L
         // 先让界面从"已就绪"切到"正在释放"。否则卸载的几百毫秒里，
         // 宿主功能区在说"正在释放模型"，插件页却已经写"未加载 · 点加载"—— 自相矛盾
         //
@@ -549,7 +591,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 } catch (_: InterruptedException) {
                     // 进程在退出，没必要处理
                 }
-                engineUnloading = false
+                unloadingSince = 0L
                 notifySchemaChanged()
             }, "voxcpm2-unload").apply { isDaemon = true; start() }
         }
@@ -1358,7 +1400,16 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 内存统计刷新都在那边，复制一份迟早会分叉。
      */
     private fun loadFromUi() {
-        if (nativeReady || engineLoading) return
+        // 挡住的两种情况都要**留一行日志**。以前是 `if (...) return` 静默丢弃，
+        // 用户点完什么都没发生、日志里也查不到为什么 —— 只能靠猜。
+        if (nativeReady) {
+            logLine("引擎已就绪，忽略这次「加载模型」")
+            return
+        }
+        if (engineLoading) {
+            logLine("上一次加载还在跑，忽略这次重复点击")
+            return
+        }
         engineLoading = true
         logLine("用户点「加载模型」")
         // ⚠ 这里**不重画整页**（v0.7.2）。
@@ -1686,5 +1737,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
          * 宿主那边已经改成自己轮询 `getStatus().state`，不看这个通知。
          */
         private const val UNLOAD_SETTLE_MS = 600L
+
+        /**
+         * 「正在释放」最多挡住界面多久。
+         *
+         * 正常路径是 [UNLOAD_SETTLE_MS] 之后由延迟线程把 [unloadingSince] 清掉。
+         * 线程没跑成时这个上限兜底 —— 超过它，`engineUnloading` 自动变 false，
+         * 「加载模型」恢复可点。宁可让用户提前点一下（`nativeFree` 是幂等的），
+         * 也不要让按钮永久灰着、看起来像插件死了。
+         */
+        private const val UNLOAD_GRACE_MS = 5_000L
     }
 }
