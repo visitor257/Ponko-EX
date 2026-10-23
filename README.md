@@ -1,6 +1,6 @@
 # Ponko-EX
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Release](https://img.shields.io/github/v/release/visitor257/Ponko-EX?label=plugin&color=success) ![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white) ![minSdk](https://img.shields.io/badge/minSdk-28-orange.svg) ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-lightgrey.svg) ![Host](https://img.shields.io/badge/host-Ponko%202.0.0%2B-informational) ![API](https://img.shields.io/badge/plugin%20API-v12-blueviolet)
+![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white) ![minSdk](https://img.shields.io/badge/minSdk-28-orange.svg) ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-lightgrey.svg) ![Host](https://img.shields.io/badge/host-Ponko%202.0.0%2B-informational) ![API](https://img.shields.io/badge/plugin%20API-v12-blueviolet)
 
 > Ponko 的插件工程 —— 语音合成这类能力放在插件里，不进主 App。
 >
@@ -8,19 +8,15 @@
 
 [English](README.en.md) · 中文
 
-**两条路，按身份往下看：**
+**本仓库只放文档和约定，不放安装说明。** 插件的获取与安装由各插件线自己负责；
+这里管的是「插件怎么写、接口长什么样、为什么这么设计」。
 
-| 我想 | 去 |
-|---|---|
-| **装插件来用**（VoxCPM2 语音合成） | [下载与安装](#下载与安装) |
-| **自己写一个插件** | [前置：先发布插件 SDK](#前置先发布插件-sdk) → [构建](#构建) → [签名](#签名关键) |
-
-- 插件开发手册：[`doc/plugin-guide.md`](doc/plugin-guide.md) · 为什么这么设计：[`log/`](log/)
+- 插件开发手册：[`doc/plugin-guide.md`](doc/plugin-guide.md)
+- 设计与踩坑记录：[`log/`](log/)
 
 ## 目录
 
 - [插件一览](#插件一览)
-- [下载与安装](#下载与安装)
 - [前置：先发布插件 SDK](#前置先发布插件-sdk)
 - [构建](#构建)
 - [签名（关键）](#签名关键)
@@ -34,65 +30,10 @@
 
 ## 插件一览
 
-| 插件 | 做什么 | 分支 | 最新发布 |
+| 插件 | 做什么 | 分支 | 版本 |
 |---|---|---|---|
-| **VoxCPM2 语音合成** | 本地文本转语音，纯手机 CPU 推理 | `Ponko-EX_VoxCPM2` | [0.9.0](https://github.com/visitor257/Ponko-EX/releases/tag/voxcpm2-0.9.0) |
+| **VoxCPM2 语音合成** | 本地文本转语音，纯手机 CPU 推理 | `Ponko-EX_VoxCPM2` | `0.9.0` |
 | **Echo** | 不做什么，只为验证插件链路、当模板 | `Ponko-EX_test` | — |
-
----
-
-# 使用
-
-## 下载与安装
-
-### 1. 先装宿主
-
-Ponko **2.0.0 或更新**：<https://github.com/visitor257/Ponko/releases>
-
-插件通过宿主的插件 SDK 通信。宿主低于 2.0.0（插件 API 12）**装上也连不上**。
-
-### 2. 再装插件
-
-到 [Releases](https://github.com/visitor257/Ponko-EX/releases) 下载
-`Ponko-EX_VoxCPM2_0.9.0.apk`，当普通 APK 安装。
-
-### 3. 备好权重
-
-**权重不在 APK 里**（模型太大，塞不进安装包）：
-
-| 方式 | 说明 |
-|---|---|
-| 插件内下载 | 插件「模型」页，标准 Q8 约 **3.55 GB** / 精简 Q4 约 **2.83 GB**；支持断点续传、三个镜像 |
-| 自行导入 | 准备两份 GGUF：BaseLM + Acoustic |
-
-> 下载一份要留出「**文件大小 + 同样大小的内存副本**」的空间。
-
-### 4. 开始用
-
-Ponko → 插件 → VoxCPM2 → 「模型」页备好权重 → **加载模型** → **开始推理**
-
-环境要求与预期：
-
-| 项 | 值 |
-|---|---|
-| 系统 | Android 9+（minSdk 28） |
-| 架构 | arm64 |
-| 内存 | **建议 8 GB** |
-| 速度 | 纯 CPU 推理，5 秒语音约 **1~2 分钟** |
-
-关于签名：发布包已用**宿主的密钥**签好 v1 + v2 + v3。宿主用
-`protectionLevel="signature"` 的权限保护插件绑定，签名不同 `bindService`
-直接抛 `SecurityException` —— 自己重编的话见[签名](#签名关键)一节。
-
-### 校验下载
-
-```bat
-certutil -hashfile Ponko-EX_VoxCPM2_0.9.0.apk SHA256
-apksigner verify --verbose --min-sdk-version 23 Ponko-EX_VoxCPM2_0.9.0.apk
-```
-
-0.9.0 的 sha256 是 `a44f55c8b2729990841f5f63e386e54c786648323e1e23338b8ff80c8b06a9c8`，
-4,699,635 字节。
 
 ---
 
