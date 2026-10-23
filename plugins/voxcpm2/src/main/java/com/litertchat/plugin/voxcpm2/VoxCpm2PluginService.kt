@@ -57,6 +57,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
     @Volatile private var nativeReady = false
     /** 「释放模型」点下去之后、原生真的 free 完之前的短暂状态 */
     @Volatile private var engineUnloading = false
+    /**
+     * 加载线程正在跑。
+     *
+     * 以前没有这个标记：`loadFromUi` 在加载期间不改任何 schema 字段（`nativeReady`
+     * 还是 false），「加载模型」按钮看起来仍然可点，连点两下就会起两个加载线程、
+     * 对同一份权重调两次 `nativeInit` —— 那是原生侧的未定义行为。
+     */
+    @Volatile private var engineLoading = false
     @Volatile private var sampleRate = 48_000
     @Volatile private var loadedBytes = 0L
     @Volatile private var loadedSourceKey = ""
@@ -510,7 +518,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
         engineUnloading = wasReady
         // 先让界面从"已就绪"切到"正在释放"。否则卸载的几百毫秒里，
         // 宿主功能区在说"正在释放模型"，插件页却已经写"未加载 · 点加载"—— 自相矛盾
-        if (wasReady) notifySchemaChanged()
+        //
+        // ⚠ v0.7.2：这一句只 patch 状态行，**不重画**。
+        // 那一刻真的变了的只有「引擎」那行的文字；按钮的 enabled 虽然也变
+        // （「释放模型」该灰掉），但它背后是幂等的 `nativeFree`，
+        // 多点一次不会有副作用 —— 用一次整页重建换一个按钮变灰不值
+        // （重画会丢外层滚动位置，见 log/2026-10-23-报给宿主-重画丢位置.md）。
+        // 真正需要按钮翻转的是 `nativeFree` 之后的 400 ms 那一声，那一次保留重画。
+        if (wasReady) notifyUiPatch("st_engine", "正在释放内存…", append = false)
 
         runCatching { VoxCpm2Bridge.nativeFree() }
             .onFailure { Log.w(TAG, "nativeFree 失败", it) }
@@ -1289,7 +1304,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 方法上，所以两条入口的状态是同一份（都读 nativeReady）。
             "en_load" -> loadFromUi()
             "en_unload" -> {
-                if (!nativeReady) return
+                // `engineUnloading` 也要挡：v0.7.2 起这里不再靠重画把按钮灰掉，
+                // 释放的那几百毫秒里按钮看起来还能点 —— 连点两下会调两次 `nativeFree`
+                if (!nativeReady || engineUnloading) return
                 logLine("用户点「释放模型」")
                 closeEngineBlocking()
             }
@@ -1341,19 +1358,38 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 内存统计刷新都在那边，复制一份迟早会分叉。
      */
     private fun loadFromUi() {
-        if (nativeReady) return
+        if (nativeReady || engineLoading) return
+        engineLoading = true
         logLine("用户点「加载模型」")
-        notifySchemaChanged()
+        // ⚠ 这里**不重画整页**（v0.7.2）。
+        //
+        // 原来这一行是 `notifySchemaChanged()`，但它改不动任何东西：
+        // 此刻 `nativeReady` 还是 false，`en_load` / `en_unload` 的 enabled
+        // 与状态行的取值和上一帧**完全一样**，唯一要变的是日志（走 patch）
+        // 和一句"正在加载"。触发一次重画的代价是宿主把整页拆了重建，
+        // 外壳 ScrollView 的滚动位置会丢 —— 用户看到的就是"点一下跳回最顶"。
+        //
+        // 真有结构变化的是**加载完成**那一次（两个按钮的 enabled 要翻转），
+        // 那一次只能重画，躲不掉（宿主的 patch 改不了 ACTION）。
+        notifyUiPatch("st_engine", "正在加载…", append = false)
         Thread({
+            // 成功时 `loadEngineBlocking` 自己已经喊过一次重画（按钮要翻转），
+            // 这里不要再补 —— 两次重画就是两次跳。
+            var renderedByLoad = false
             try {
                 // config 传空 threads：用自动估算（宿主参数区的线程数才是唯一入口）
                 loadEngineBlocking(null, EngineConfig())
+                // 走幂等早退时（native 已就绪，但上面那个标记还没同步）它也**不**喊，
+                // 所以不能用"没抛异常"当判据，要看 nativeReady 是不是真的翻过来了
+                renderedByLoad = nativeReady
             } catch (t: Throwable) {
                 Log.w(TAG, "加载失败", t)
                 dlNotice = "加载失败：${t.message ?: t.javaClass.simpleName}"
                 logLine("加载失败：${t.message ?: t.javaClass.simpleName}")
             } finally {
-                notifySchemaChanged()
+                engineLoading = false
+                // 失败 / 幂等早退：状态行必须回到真实值（"正在加载…"是 patch 上去的假象）
+                if (!renderedByLoad) notifySchemaChanged()
             }
         }, "voxcpm2-load").apply { isDaemon = true; start() }
     }
