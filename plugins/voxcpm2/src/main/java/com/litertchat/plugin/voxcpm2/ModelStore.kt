@@ -41,14 +41,15 @@ object ModelStore {
     /** 一个权重文件 */
     data class Spec(
         val fileName: String,
-        val label: String,
+        /** `R.string.*` 里的标签 —— 这里存 id 不存字符串，取的时候才按语言解析 */
+        val labelRes: Int,
         val bytes: Long,
     )
 
     /** 一个量化版本：两个文件凑成一套 */
     data class Version(
         val key: String,
-        val label: String,
+        val labelRes: Int,
         val baseLm: Spec,
         val acoustic: Spec,
         val note: String,
@@ -60,7 +61,7 @@ object ModelStore {
     /** 一个下载镜像 */
     data class Mirror(
         val key: String,
-        val label: String,
+        val labelRes: Int,
         val note: String,
     )
 
@@ -72,7 +73,6 @@ object ModelStore {
         val baseUrl: String,
     ) {
         val totalBytes: Long get() = version.totalBytes
-        val label: String get() = "${version.label} · ${mirror.label}"
         val note: String get() = version.note
         fun files(): List<Spec> = version.files()
     }
@@ -81,7 +81,7 @@ object ModelStore {
     const val ROLE_BASE_LM = "base_lm"
     const val ROLE_ACOUSTIC = "acoustic"
 
-    private val ACOUSTIC_F16 = Spec("VoxCPM2-Acoustic-F16.gguf", "声学模型 Acoustic", 1_825_096_352L)
+    private val ACOUSTIC_F16 = Spec("VoxCPM2-Acoustic-F16.gguf", R.string.spec_acoustic, 1_825_096_352L)
 
     /**
      * 标准版：BaseLM Q8_0。
@@ -91,8 +91,8 @@ object ModelStore {
      */
     val STANDARD = Version(
         key = "standard",
-        label = "标准 Q8",
-        baseLm = Spec("VoxCPM2-BaseLM-Q8_0.gguf", "主干模型 BaseLM Q8_0", 1_727_309_920L),
+        labelRes = R.string.model_standard,
+        baseLm = Spec("VoxCPM2-BaseLM-Q8_0.gguf", R.string.spec_base_q8, 1_727_309_920L),
         acoustic = ACOUSTIC_F16,
         note = "Q8_0 · 3.55 GB · 音质略好，多占 0.7 GB；仓库声明 apache-2.0",
     )
@@ -105,25 +105,25 @@ object ModelStore {
      */
     val COMPACT = Version(
         key = "compact",
-        label = "精简 Q4",
-        baseLm = Spec("VoxCPM2-BaseLM-Q4_K_M.gguf", "主干模型 BaseLM Q4_K_M", 1_002_374_880L),
+        labelRes = R.string.model_compact,
+        baseLm = Spec("VoxCPM2-BaseLM-Q4_K_M.gguf", R.string.spec_base_q4, 1_002_374_880L),
         acoustic = ACOUSTIC_F16,
         note = "Q4_K_M · 2.83 GB · 手机内存吃紧时选它；第三方转换件，仓库未声明许可",
     )
 
     private val MIRROR_HF = Mirror(
         key = "hf",
-        label = "HuggingFace",
+        labelRes = R.string.mirror_hf,
         note = "huggingface.co 直连，国内通常打不开",
     )
     private val MIRROR_HF_MIRROR = Mirror(
         key = "hfmirror",
-        label = "hf-mirror",
+        labelRes = R.string.mirror_hfmirror,
         note = "hf-mirror.com，HF 的国内镜像",
     )
     private val MIRROR_MODELSCOPE = Mirror(
         key = "modelscope",
-        label = "魔搭",
+        labelRes = R.string.mirror_modelscope,
         note = "modelscope.cn，国内直连",
     )
 
@@ -208,6 +208,12 @@ object ModelStore {
     data class Ready(
         val baseLm: File,
         val acoustic: File,
+        /**
+         * 这套权重从哪来：`"imported"` 或版本的 key。
+         *
+         * 存**标记**而不是现成的文案：这段文字会显示在界面上，得跟着语言变。
+         * 翻译在插件服务里做（见 `originLabel()`），这里只管"是哪一套"。
+         */
         val origin: String,
         val bytes: Long,
     )
@@ -219,7 +225,7 @@ object ModelStore {
             importedBase.length() > 0 && importedAcoustic.length() > 0
         ) {
             return Ready(
-                importedBase, importedAcoustic, "本地导入",
+                importedBase, importedAcoustic, "imported",
                 importedBase.length() + importedAcoustic.length(),
             )
         }
@@ -227,7 +233,7 @@ object ModelStore {
         VERSIONS.forEach { v ->
             if (isVersionReady(ctx, v)) {
                 return Ready(fileFor(ctx, v.baseLm), fileFor(ctx, v.acoustic),
-                    "已下载 · ${v.label}", v.totalBytes)
+                    v.key, v.totalBytes)
             }
         }
         return null
@@ -309,7 +315,7 @@ object ModelStore {
                     existing = 0L
                     total = conn.contentLengthLong.takeIf { it > 0 } ?: spec.bytes
                 }
-                else -> return Result.failure(IllegalStateException("HTTP $code（${url.host}）"))
+                else -> return Result.failure(IllegalStateException("HTTP $code (${url.host})"))
             }
 
             var downloaded = existing
@@ -321,7 +327,7 @@ object ModelStore {
                     val buf = ByteArray(256 * 1024)
                     var lastTick = 0L
                     while (true) {
-                        if (cancelled.get()) return Result.failure(InterruptedException("已取消"))
+                        if (cancelled.get()) return Result.failure(InterruptedException("cancelled"))
                         val n = input.read(buf)
                         if (n <= 0) break
                         raf.write(buf, 0, n)
@@ -337,7 +343,7 @@ object ModelStore {
 
             if (total > 0 && part.length() < total) {
                 return Result.failure(
-                    IllegalStateException("连接中断（${part.length()}/$total 字节），可再次点击继续")
+                    IllegalStateException("connection lost (${part.length()}/$total bytes)")
                 )
             }
 

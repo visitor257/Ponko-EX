@@ -1,5 +1,179 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 插件自己的资源。界面文字不在这里 —— 那些由插件在 UiSchema 里给，宿主直接显示 -->
+<!--
+  English is the DEFAULT language (values/), Chinese lives in values-zh/.
+
+  Why default English: Android falls back to values/ for any language that has no
+  qualified folder. So whatever sits in values/ is what a Russian or Portuguese
+  user sees — that is the "default language", no setting involved.
+
+  Nothing here is cached: the host rebuilds its Activity on a locale change, the
+  service is rebound, and getSettingsSchema() runs again. Keep every lookup at
+  call time (see the guide, §14).
+-->
 <resources>
     <string name="app_name">Ponko · VoxCPM2</string>
+    <string name="plugin_name">VoxCPM2 Speech</string>
+    <string name="plugin_hint">8 GB RAM recommended · CPU-only inference · about 1–2 min for 5 s of speech</string>
+
+    <!-- Host action buttons (ActionLabel), max 12 characters each -->
+    <string name="action_load">Load model</string>
+    <string name="action_unload">Unload</string>
+    <string name="action_reasoning">Synthesize</string>
+    <string name="action_stop">Stop</string>
+
+    <!-- Model data labels -->
+    <string name="model_standard">Standard Q8</string>
+    <string name="model_compact">Lite Q4</string>
+    <string name="spec_base_q8">BaseLM · Q8_0</string>
+    <string name="spec_base_q4">BaseLM · Q4_K_M</string>
+    <string name="spec_acoustic">Acoustic model</string>
+    <string name="mirror_hf">HuggingFace</string>
+    <string name="mirror_hfmirror">hf-mirror</string>
+    <string name="mirror_modelscope">ModelScope</string>
+
+    <!-- Tabs and sections -->
+    <string name="tab_model">Model</string>
+    <string name="tab_param">Params</string>
+    <string name="tab_result">Result</string>
+    <string name="sec_download">Download</string>
+    <string name="sec_history">History</string>
+
+    <!-- Labels -->
+    <string name="lbl_model_available">Available model</string>
+    <string name="lbl_engine">Engine</string>
+    <string name="lbl_storage">Storage</string>
+    <string name="lbl_model_version">Model version</string>
+    <string name="lbl_download_progress">Download progress</string>
+    <string name="lbl_infer_progress">Inference progress</string>
+    <string name="lbl_notice">Notice</string>
+    <string name="lbl_device">Device</string>
+    <string name="lbl_internal_state">Internal state</string>
+    <string name="lbl_runtime_log">Runtime log</string>
+    <string name="lbl_voice">Voice description (default)</string>
+    <string name="lbl_cfg">CFG guidance</string>
+    <string name="lbl_steps">Diffusion steps</string>
+    <string name="grp_plugin_state">Plugin state</string>
+    <string name="nt_clear_failed_plain">Clear failed</string>
+    <string name="lbl_seed">Seed</string>
+    <string name="lbl_params">Parameters</string>
+    <string name="lbl_target_text">Target text</string>
+    <string name="lbl_result_audio">This result</string>
+
+    <!-- Engine / model status -->
+    <string name="st_engine_ready">Ready · %1$d kHz · %2$d threads</string>
+    <string name="st_engine_loading">Loading…</string>
+    <string name="st_engine_unloading">Freeing memory…</string>
+    <string name="st_engine_idle_tap">Not loaded · tap Load model below</string>
+    <string name="st_engine_idle_first">Not loaded · import or download first</string>
+    <string name="st_model_partial">Incomplete · %1$s on disk</string>
+    <string name="st_model_none">No usable model files</string>
+    <string name="st_disk">%1$s free · %2$s used</string>
+    <string name="st_file_ready">Ready · %1$s</string>
+    <string name="st_file_resumable">Resumable · %1$s / %2$s</string>
+    <string name="st_file_partial">Incomplete · %1$s</string>
+    <string name="st_file_absent">Not downloaded · %1$s</string>
+    <string name="st_copying">Copying…</string>
+    <string name="st_imported">Imported · %1$s</string>
+
+    <!-- Help text -->
+    <string name="help_need_model">Import or download a model first</string>
+    <string name="help_free_size">Frees %1$s</string>
+    <string name="help_pattern_base">VoxCPM2-BaseLM-*.gguf</string>
+    <string name="help_pattern_acoustic">VoxCPM2-Acoustic-*.gguf</string>
+
+    <!-- Buttons -->
+    <string name="btn_cancel_download">Cancel download</string>
+    <string name="btn_delete_models">Delete downloaded models</string>
+    <string name="btn_clear_log">Clear log</string>
+    <string name="btn_download_from">Download from %1$s</string>
+
+    <!-- Intro line on top of the page -->
+    <string name="intro_copying">Copying model files…</string>
+    <string name="intro_downloading">Downloading %1$s%%</string>
+    <string name="intro_ready_fill">Type the text, then tap “%1$s”</string>
+    <string name="intro_ready_tap">Tap “%1$s”, or go to Model and load it first</string>
+    <string name="intro_partial">Model incomplete · continue on the Model tab</string>
+    <string name="intro_empty">Download or import a model on the Model tab</string>
+
+    <!-- Modes -->
+    <string name="mode_plain">Plain</string>
+    <string name="mode_clone">Voice clone</string>
+    <string name="mode_clone_verbatim">Verbatim clone</string>
+
+    <!-- Results / history -->
+    <string name="res_empty">No results yet · go to %1$s and tap “%2$s”</string>
+    <string name="res_text_chars">Text (%1$d chars)</string>
+    <string name="hist_audio">#%1$d preview</string>
+
+    <!-- Validation hints -->
+    <string name="hint_cfg_empty">Cannot be empty; keeping %1$s</string>
+    <string name="hint_cfg_bad">“%1$s” is not a number in 1.0–4.0; keeping %2$s</string>
+    <string name="hint_steps_empty">Cannot be empty; keeping %1$d</string>
+    <string name="hint_steps_bad">“%1$s” is not an integer in 4–24; keeping %2$d</string>
+
+    <!-- Notices -->
+    <string name="nt_cancelling">Cancelling…</string>
+    <string name="nt_delete_blocked">The engine is using these files. Turn it off on the plugin card first.</string>
+    <string name="nt_deleted">Deleted the downloaded models · freed %1$s</string>
+    <string name="nt_import_failed">Importing %1$s failed · try another file</string>
+    <string name="nt_clear_blocked">The engine is running. Release the model first.</string>
+    <string name="nt_cleared">Cleared the imported files (%1$s)</string>
+    <string name="nt_clear_failed">Could not clear: %1$s</string>
+    <string name="nt_no_source">No download source for %1$s × %2$s</string>
+    <string name="nt_low_space">Not enough space: need %1$s, %2$s free</string>
+    <string name="dl_preparing">Preparing…</string>
+    <string name="dl_overall_suffix"> (overall %1$s%%)</string>
+    <string name="dl_failed_with">Download failed: %1$s</string>
+    <string name="dl_failed_plain">Download failed</string>
+    <string name="dl_error">Download error</string>
+    <string name="dl_cancelled">Cancelled. Starting again resumes from where it stopped.</string>
+    <string name="dl_done">Download complete (%1$s). You can load the model now, or just tap “%2$s” — it loads first.</string>
+    <string name="dl_interrupted">Interrupted. Tap the same mirror again to resume.</string>
+
+    <!-- Errors (PluginException defaults are Chinese inside the SDK, so pass ours) -->
+    <string name="err_no_model">No usable model files yet. On the Model tab, import two files (BaseLM + Acoustic) or download a set (Standard Q8 3.55 GB / Lite Q4 2.83 GB).</string>
+    <string name="err_load_failed">Load failed: %1$s</string>
+    <string name="err_oom">Only %1$s of RAM available; loading needs about %2$s. Close other apps or switch to the lite build.</string>
+    <string name="err_text_empty">Text is empty</string>
+    <string name="err_mode">Unsupported synthesis mode: %1$d</string>
+    <string name="err_need_ref">This mode needs a reference audio clip</string>
+    <string name="err_ref_too_big">File is larger than %1$d MB; a reference clip only needs 5–10 s</string>
+    <string name="err_ref_unreadable">Could not read the reference audio (%1$s). Try another local file.</string>
+    <string name="err_ref_empty">The reference audio file is empty</string>
+    <string name="err_ref_decode">Could not decode the reference audio. Try a 5–10 s clip that plays normally.</string>
+    <string name="err_need_transcript">Verbatim clone also needs the transcript of the reference audio</string>
+    <string name="err_cancelled">Cancelled</string>
+    <string name="err_gen_failed">Generation failed: %1$s</string>
+    <string name="err_gen_no_audio">the engine produced no audio</string>
+    <string name="err_unknown_reason">unknown reason</string>
+
+    <!-- Stages -->
+    <string name="stage_read_ref">Reading reference audio</string>
+    <string name="stage_decode_ref">Decoding reference audio</string>
+    <string name="stage_analyze">Analyzing text (%1$d chars)</string>
+    <string name="stage_generate">Generating…</string>
+    <string name="stage_generated">Generated %1$s s</string>
+    <string name="stage_wrap">Writing WAV</string>
+    <string name="infer_stage_analyze">Analyzing text</string>
+
+    <!-- Diagnostics -->
+    <string name="unknown_abi">unknown ABI</string>
+    <string name="diag_device_value">%1$d cores · %2$s · %3$s / %4$s RAM</string>
+    <string name="diag_engine_value">%1$s · %2$d threads · %3$d Hz · %4$s</string>
+    <string name="diag_engine_idle">Not loaded</string>
+    <string name="diag_state_value">Download %1$s · Inference %2$s · %3$d log lines</string>
+    <string name="diag_running">running</string>
+    <string name="diag_idle">idle</string>
+
+    <!-- Foreground service notification body (title and channel name come from the SDK) -->
+    <string name="notif_loading">Loading model…</string>
+    <string name="notif_text">Processing text…</string>
+    <string name="notif_generate">Generating speech…</string>
+    <string name="notif_wave">Building the waveform…</string>
+    <string name="notif_work">Working…</string>
+
+    <string name="origin_imported">Local import</string>
+    <string name="origin_downloaded">Downloaded · %1$s</string>
+    <string name="dl_downloading">Downloading · %1$s / %2$s</string>
+    <string name="preview_truncated">%1$s… (%2$d chars total)</string>
 </resources>

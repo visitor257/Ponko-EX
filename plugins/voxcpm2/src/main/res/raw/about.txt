@@ -1,0 +1,14 @@
+VoxCPM2 text-to-speech, running entirely on this device.
+
+Requires Ponko 2.0.0 or newer (plugin API 12).
+
+Model weights are NOT bundled with this APK. Download them in the plugin
+(Model tab) or import your own two GGUF files. The weights keep their own
+licence: the official VoxCPM2 weights are Apache-2.0; the Lite Q4 build is a
+third-party conversion whose repository declares no licence.
+
+Pure CPU inference. Expect roughly 1-2 minutes for 5 seconds of speech.
+8 GB of RAM is recommended.
+
+Plugin code: MIT.
+https://github.com/visitor257/Ponko-EX

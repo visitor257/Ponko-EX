@@ -28,6 +28,7 @@
 | [2026-10-21-推送工具的三个坑.md](2026-10-21-推送工具的三个坑.md) | 空仓库 409、`ls-tree` 转义路径、gzip 错误体 |
 | [2026-10-21-VoxCPM2插件线.md](2026-10-21-VoxCPM2插件线.md) | JNI 符号绑包名、下载占死 worker、许可缺口、宿主 2.0.0 契约适配 |
 | [2026-10-23-v0.8.0-改用基类引擎入口.md](2026-10-23-v0.8.0-改用基类引擎入口.md) | 直接调 `*Blocking` 导致宿主判 `NOT_READY` 后重载并补发合成（**同一次合成跑两遍**）；改走 `requestEngineLoad`/`requestEngineClose`，`engineLoading` 改读 `pluginEngineState`；卡片加 `ponko.about` |
+| [2026-10-23-v0.9.0-中英双语.md](2026-10-23-v0.9.0-中英双语.md) | 默认语言 = 你把哪门语言放进 `values/`；132 个 key 中英各一份；`localizedContext()` 而非裸 `getString()`（per-app language）；数字行用 ASCII token；`label` → `labelRes`；`ActionLabel.MAX_LEN=12` 超长直接丢弃；SDK 没有 `res/`，通知标题天生只能中文 |
 
 ## 一句话版（最容易忘的）
 

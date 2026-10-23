@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  中文（values-zh）。默认语言在 values/ 里，是英文。
+
+  之所以不是 values-zh-CN：中文用户不论简繁都会命中这里，而简体是这套文案
+  唯一写过的形态 —— 繁体用户拿到简体说明，比拿到英文好。
+-->
+<resources>
+    <string name="app_name">Ponko · VoxCPM2</string>
+    <string name="plugin_name">VoxCPM2 语音合成</string>
+    <string name="plugin_hint">建议 8 GB 内存；纯 CPU 推理，5 秒语音约需 1~2 分钟</string>
+
+    <!-- 宿主功能按钮（ActionLabel），每个不超过 12 个字符 -->
+    <string name="action_load">加载模型</string>
+    <string name="action_unload">释放模型</string>
+    <string name="action_reasoning">开始推理</string>
+    <string name="action_stop">停止</string>
+
+    <!-- 模型数据标签 -->
+    <string name="model_standard">标准 Q8</string>
+    <string name="model_compact">精简 Q4</string>
+    <string name="spec_base_q8">主干模型 BaseLM Q8_0</string>
+    <string name="spec_base_q4">主干模型 BaseLM Q4_K_M</string>
+    <string name="spec_acoustic">声学模型 Acoustic</string>
+    <string name="mirror_hf">HuggingFace</string>
+    <string name="mirror_hfmirror">hf-mirror</string>
+    <string name="mirror_modelscope">魔搭</string>
+
+    <!-- 页签与分节 -->
+    <string name="tab_model">模型</string>
+    <string name="tab_param">参数</string>
+    <string name="tab_result">结果</string>
+    <string name="sec_download">下载</string>
+    <string name="sec_history">历史</string>
+
+    <!-- 行标签 -->
+    <string name="lbl_model_available">可用模型</string>
+    <string name="lbl_engine">引擎</string>
+    <string name="lbl_storage">存储</string>
+    <string name="lbl_model_version">模型版本</string>
+    <string name="lbl_download_progress">下载进度</string>
+    <string name="lbl_infer_progress">推理进度</string>
+    <string name="lbl_notice">提示</string>
+    <string name="lbl_device">设备</string>
+    <string name="lbl_internal_state">内部状态</string>
+    <string name="lbl_runtime_log">运行日志</string>
+    <string name="lbl_voice">语音设计描述（默认）</string>
+    <string name="lbl_cfg">CFG 引导强度</string>
+    <string name="lbl_steps">扩散步数</string>
+    <string name="grp_plugin_state">插件内部状态</string>
+    <string name="nt_clear_failed_plain">清除失败</string>
+    <string name="lbl_seed">种子</string>
+    <string name="lbl_params">参数</string>
+    <string name="lbl_target_text">目标文本</string>
+    <string name="lbl_result_audio">这次的结果</string>
+
+    <!-- 引擎 / 模型状态 -->
+    <string name="st_engine_ready">已就绪 · %1$d kHz · %2$d 线程</string>
+    <string name="st_engine_loading">正在加载…</string>
+    <string name="st_engine_unloading">正在释放内存…</string>
+    <string name="st_engine_idle_tap">未加载 · 点下面「加载模型」</string>
+    <string name="st_engine_idle_first">未加载 · 先导入或下载</string>
+    <string name="st_model_partial">不完整 · 已有 %1$s</string>
+    <string name="st_model_none">没有可用的模型文件</string>
+    <string name="st_disk">剩 %1$s · 已占 %2$s</string>
+    <string name="st_file_ready">已就绪 · %1$s</string>
+    <string name="st_file_resumable">断点 · %1$s / %2$s</string>
+    <string name="st_file_partial">不完整 · %1$s</string>
+    <string name="st_file_absent">未下载 · %1$s</string>
+    <string name="st_copying">正在复制…</string>
+    <string name="st_imported">已导入 · %1$s</string>
+
+    <!-- 说明文字 -->
+    <string name="help_need_model">先导入或下载模型文件</string>
+    <string name="help_free_size">释放 %1$s</string>
+    <string name="help_pattern_base">VoxCPM2-BaseLM-*.gguf</string>
+    <string name="help_pattern_acoustic">VoxCPM2-Acoustic-*.gguf</string>
+
+    <!-- 按钮 -->
+    <string name="btn_cancel_download">取消下载</string>
+    <string name="btn_delete_models">删除已下载的模型</string>
+    <string name="btn_clear_log">清空日志</string>
+    <string name="btn_download_from">从 %1$s 下载</string>
+
+    <!-- 页面顶部那一行 -->
+    <string name="intro_copying">正在复制模型文件…</string>
+    <string name="intro_downloading">正在下载 %1$s%%</string>
+    <string name="intro_ready_fill">填「文本」，点「%1$s」</string>
+    <string name="intro_ready_tap">点「%1$s」，或到「模型」页先加载</string>
+    <string name="intro_partial">模型不完整 · 点「模型」页继续下载</string>
+    <string name="intro_empty">先到「模型」页下载或导入模型</string>
+
+    <!-- 合成模式 -->
+    <string name="mode_plain">普通合成</string>
+    <string name="mode_clone">声音克隆</string>
+    <string name="mode_clone_verbatim">极致克隆</string>
+
+    <!-- 结果 / 历史 -->
+    <string name="res_empty">还没有结果 · 到「%1$s」页点「%2$s」</string>
+    <string name="res_text_chars">文本（%1$d 字）</string>
+    <string name="hist_audio">#%1$d 试听</string>
+
+    <!-- 校验回显 -->
+    <string name="hint_cfg_empty">不能为空，保留 %1$s</string>
+    <string name="hint_cfg_bad">「%1$s」不是 1.0~4.0 的数，保留 %2$s</string>
+    <string name="hint_steps_empty">不能为空，保留 %1$d</string>
+    <string name="hint_steps_bad">「%1$s」不是 4~24 的整数，保留 %2$d</string>
+
+    <!-- 提示 -->
+    <string name="nt_cancelling">正在取消…</string>
+    <string name="nt_delete_blocked">引擎正在使用模型，请先在插件卡片上停用，再回来删除</string>
+    <string name="nt_deleted">已删除已下载的模型，释放 %1$s</string>
+    <string name="nt_import_failed">导入%1$s失败，换一个文件试试</string>
+    <string name="nt_clear_blocked">引擎正在运行，先「释放模型」再清除</string>
+    <string name="nt_cleared">已清除导入的文件（%1$s）</string>
+    <string name="nt_clear_failed">清除失败：%1$s</string>
+    <string name="nt_no_source">这套组合没有下载源：%1$s × %2$s</string>
+    <string name="nt_low_space">空间不够：需要 %1$s，只剩 %2$s</string>
+    <string name="dl_preparing">准备中…</string>
+    <string name="dl_overall_suffix">（总进度 %1$s%%）</string>
+    <string name="dl_failed_with">下载失败：%1$s</string>
+    <string name="dl_failed_plain">下载失败</string>
+    <string name="dl_error">下载异常</string>
+    <string name="dl_cancelled">已取消，下次继续会从断点续传</string>
+    <string name="dl_done">下载完成（%1$s）。现在可以点「加载模型」，或者直接点「%2$s」（会先加载再合成）。</string>
+    <string name="dl_interrupted">下载中断，再点一次同一个镜像可以接着下</string>
+
+    <!-- 错误（SDK 里 PluginException 的默认文案是中文，所以自己传） -->
+    <string name="err_no_model">还没有可用的模型文件。到「模型」页：从本地导入两份（BaseLM + Acoustic），或者下载一套（标准 Q8 3.55 GB / 精简 Q4 2.83 GB）。</string>
+    <string name="err_load_failed">加载失败：%1$s</string>
+    <string name="err_oom">可用内存 %1$s，加载需要约 %2$s。先关掉其它应用，或换成精简源。</string>
+    <string name="err_text_empty">文本为空</string>
+    <string name="err_mode">不支持的合成模式：%1$d</string>
+    <string name="err_need_ref">这个模式需要一段参考音频</string>
+    <string name="err_ref_too_big">文件超过 %1$d MB，参考音频只要 5~10 秒</string>
+    <string name="err_ref_unreadable">参考音频读不出来：%1$s。换一段本地音频试试。</string>
+    <string name="err_ref_empty">参考音频是空文件</string>
+    <string name="err_ref_decode">参考音频解码失败。换一段 5~10 秒、能正常播放的音频试试。</string>
+    <string name="err_need_transcript">「极致克隆」需要参考音频的逐字稿</string>
+    <string name="err_cancelled">已取消</string>
+    <string name="err_gen_failed">生成失败：%1$s</string>
+    <string name="err_gen_no_audio">引擎没有产出音频</string>
+    <string name="err_unknown_reason">未知原因</string>
+
+    <!-- 阶段 -->
+    <string name="stage_read_ref">读取参考音频</string>
+    <string name="stage_decode_ref">解码参考音频</string>
+    <string name="stage_analyze">分析文本（%1$d 字）</string>
+    <string name="stage_generate">开始生成…</string>
+    <string name="stage_generated">已生成 %1$s 秒</string>
+    <string name="stage_wrap">封装 WAV</string>
+    <string name="infer_stage_analyze">分析文本</string>
+
+    <!-- 诊断 -->
+    <string name="unknown_abi">未知 ABI</string>
+    <string name="diag_device_value">%1$d 核 · %2$s · 内存 %3$s / %4$s</string>
+    <string name="diag_engine_value">%1$s · %2$d 线程 · %3$d Hz · 占 %4$s</string>
+    <string name="diag_engine_idle">未加载</string>
+    <string name="diag_state_value">下载 %1$s · 推理 %2$s · 日志 %3$d 行</string>
+    <string name="diag_running">进行中</string>
+    <string name="diag_idle">空闲</string>
+
+    <!-- 前台服务通知正文（标题与渠道名在 SDK 里，改不了） -->
+    <string name="notif_loading">正在加载模型…</string>
+    <string name="notif_text">正在处理文本…</string>
+    <string name="notif_generate">正在生成语音…</string>
+    <string name="notif_wave">正在合成波形…</string>
+    <string name="notif_work">正在工作…</string>
+
+    <string name="origin_imported">本地导入</string>
+    <string name="origin_downloaded">已下载 · %1$s</string>
+    <string name="dl_downloading">下载中 · %1$s / %2$s</string>
+    <string name="preview_truncated">%1$s…（共 %2$d 字）</string>
+</resources>

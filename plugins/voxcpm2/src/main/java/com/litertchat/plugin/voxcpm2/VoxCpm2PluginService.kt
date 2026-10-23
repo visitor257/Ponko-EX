@@ -3,6 +3,7 @@ package com.litertchat.plugin.voxcpm2
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.res.Resources
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
@@ -85,6 +86,61 @@ class VoxCpm2PluginService : PonkoPluginService() {
     private val engineLoading: Boolean
         get() = pluginEngineState == EngineState.LOADING
 
+    // ======================================================== 文案（中英双语）
+
+    /**
+     * 按**宿主当前界面语言**解析的资源。
+     *
+     * 文案全在 `res/values/`（英文，默认）和 `res/values-zh/`（中文）里，
+     * 所以 `values/` 就是"默认语言"—— 俄语、葡语用户都会落到英文。
+     *
+     * 为什么不用裸 `getString()`：插件资源默认跟**系统**语言走，而宿主从
+     * Android 13 起可以被单独设成另一种语言。`localizedContext()` 把宿主的
+     * 语言灌进 configuration，两边才对得上。
+     *
+     * 结果按语言标签缓存 —— 宿主换语言会重新绑定，标签一变缓存自然失效。
+     * 但**不**在 `onCreate` 里算好存成字段：那是"切完语言还是旧文案"的来源。
+     */
+    @Volatile private var resCache: Resources? = null
+    @Volatile private var resCacheTag: String = ""
+
+    private fun res(): Resources {
+        val tag = hostLocaleTag
+        val cur = resCache
+        if (cur != null && tag == resCacheTag) return cur
+        val fresh = localizedContext().resources
+        resCache = fresh
+        resCacheTag = tag
+        return fresh
+    }
+
+    private fun s(id: Int): String = res().getString(id)
+
+    private fun s(id: Int, vararg args: Any): String = res().getString(id, *args)
+
+    /** 权重从哪来（`Ready.origin` 存的是标记，不是文案） */
+    private fun originLabel(origin: String): String = when {
+        origin == "imported" -> s(R.string.origin_imported)
+        origin.isBlank() -> "—"
+        else -> runCatching {
+            s(R.string.origin_downloaded, s(ModelStore.version(origin).labelRes))
+        }.getOrDefault(origin)
+    }
+
+    /**
+     * 前台服务通知的正文。
+     *
+     * 基类默认那几句是**中文硬编码**（SDK 没有 `res/`，本地化不了），
+     * 所以这里必须自己给 —— 否则英文用户的通知栏里是一句中文。
+     */
+    override fun notificationText(stage: Int, label: String?): String = label ?: when (stage) {
+        Stage.LOADING -> s(R.string.notif_loading)
+        Stage.TEXT_ENCODE -> s(R.string.notif_text)
+        Stage.DECODE -> s(R.string.notif_generate)
+        Stage.AUDIO_DECODE -> s(R.string.notif_wave)
+        else -> s(R.string.notif_work)
+    }
+
     /**
      * 引擎那一行为什么不是"已就绪"。
      *
@@ -136,7 +192,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         notifyUiPatch(KEY_DL_PROGRESS, "%.1f".format(dlPercent), false)
         notifyUiPatch(
             "${KEY_FILE_PREFIX}${spec.fileName}",
-            "下载中 · ${ModelStore.human(got)} / ${ModelStore.human(total)}",
+            s(R.string.dl_downloading, ModelStore.human(got), ModelStore.human(total)),
             false,
         )
     }
@@ -165,7 +221,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
     /** 文本预览：界面上只显示开头一段，完整文本可能上千字 */
     private fun preview(text: String): String {
         val oneLine = text.replace(Regex("\\s+"), " ").trim()
-        return if (oneLine.length <= 40) oneLine else oneLine.take(40) + "…（共 ${oneLine.length} 字）"
+        return if (oneLine.length <= 40) oneLine else s(R.string.preview_truncated, oneLine.take(40), oneLine.length)
     }
 
     /** 历史快照（最新在前）。拿副本，避免画界面时和合成线程抢同一把锁 */
@@ -220,7 +276,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
      */
     private fun importedState(role: String): String {
         val f = ModelStore.importedFile(this, role)
-        return if (f.isFile && f.length() > 0) "已导入 · ${ModelStore.human(f.length())}" else ""
+        return if (f.isFile && f.length() > 0) s(R.string.st_imported, ModelStore.human(f.length())) else ""
     }
 
     private fun logCount(): Int = synchronized(logLock) { logLines.size }
@@ -457,17 +513,17 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     override fun createManifest(): PluginManifest = PluginManifest(
         pluginId = "voxcpm2",
-        displayName = "VoxCPM2 语音合成",
+        displayName = s(R.string.plugin_name),
         // 和 plugins/voxcpm2/build.gradle.kts 的 versionName 保持一致。
         // 以前这里停在 "0.5.0" 没跟着动，插件卡片上显示的版本号是假的。
-        versionName = "0.8.0",
+        versionName = "0.9.0",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
         modelFamilies = listOf("voxcpm2"),
         // 插件自管权重（v1 约定）
         needsHostModels = false,
-        minSdkHint = "建议 8 GB 内存；纯 CPU 推理，5 秒语音约需 1~2 分钟",
+        minSdkHint = s(R.string.plugin_hint),
     )
 
     // ======================================================== 引擎
@@ -479,7 +535,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 原因必须留在这里。基类只会把它交给宿主的 `onEngineError`（画在宿主
             // 自己的功能区里），而用户盯着的是**插件页的「引擎」那行** ——
             // 以前那儿只会闪一下又变回"未加载"，看着就是"点了没反应"。
-            engineNote = "加载失败：${briefReason(t)}"
+            engineNote = s(R.string.err_load_failed, briefReason(t))
             logLine("加载失败：${t.message ?: t.javaClass.simpleName}")
             // 必须在这里重画：加载**不一定是插件页发起的**。宿主功能区的
             // 「加载模型」走 `loadEngine()` → worker → 这个方法，那条路上没有任何
@@ -511,10 +567,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val chosen = ModelStore.ready(this, versionKey)
             ?: run {
                 logLine("加载中止：本地导入不全，下载的权重也没有一套完整")
-                throw PluginException.modelInvalid(
-                    "还没有可用的模型文件。到「模型」页：从本地导入两份（BaseLM + Acoustic），" +
-                        "或者下载一套（标准 Q8 3.55 GB / 精简 Q4 2.83 GB）。"
-                )
+                throw PluginException.modelInvalid(s(R.string.err_no_model))
             }
 
         if (VoxCpm2Bridge.nativeIsReady()) {
@@ -540,7 +593,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 nativeReady = true
                 refreshDeviceStats()
                 logLine(
-                    "原生层已就绪但界面状态掉了，补同步：${chosen.origin} · " +
+                    "原生层已就绪但界面状态掉了，补同步：${originLabel(chosen.origin)} · " +
                         "${ModelStore.human(loadedBytes)} · $loadedThreads 线程 · ${sampleRate / 1000} kHz"
                 )
                 // 这一声必须喊：按钮要从"可点"翻成"已就绪"
@@ -557,8 +610,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (limit < need) {
             logLine("内存不足：可用 ${ModelStore.human(mi.availMem)}，需要 ${ModelStore.human(need)}")
             throw PluginException.outOfMemory(
-                "可用内存 ${ModelStore.human(mi.availMem)}，加载需要约 ${ModelStore.human(need)}。" +
-                    "先关掉其它应用，或换成精简源。"
+                s(R.string.err_oom, ModelStore.human(mi.availMem), ModelStore.human(need))
             )
         }
 
@@ -571,16 +623,19 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         // 走到这一步才会真的读权重。日志里留一行，出问题时能区分
         // "卡在 nativeInit 里"和"根本没走到这里"—— 两种在界面上都是转圈。
-        logLine("开始加载：${chosen.origin} · ${ModelStore.human(chosen.bytes)} · $threads 线程")
+        logLine(
+            "开始加载：${originLabel(chosen.origin)} · ${ModelStore.human(chosen.bytes)} · " +
+                "$threads 线程"
+        )
         val rc = VoxCpm2Bridge.nativeInit(
             chosen.baseLm.absolutePath,
             chosen.acoustic.absolutePath,
             threads,
         )
         if (rc != 0) {
-            val err = VoxCpm2Bridge.nativeLastError().ifBlank { "未知原因" }
-            logLine("加载失败：$err（${chosen.origin} / $threads 线程）")
-            throw PluginException.modelInvalid("加载失败：$err")
+            val err = VoxCpm2Bridge.nativeLastError().ifBlank { s(R.string.err_unknown_reason) }
+            logLine("加载失败：$err（${originLabel(chosen.origin)} / $threads 线程）")
+            throw PluginException.modelInvalid(s(R.string.err_load_failed, err))
         }
 
         sampleRate = VoxCpm2Bridge.nativeSampleRate().takeIf { it > 0 } ?: 48_000
@@ -593,7 +648,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         refreshDeviceStats()
         logLine(
-            "引擎就绪：${chosen.origin} · ${ModelStore.human(loadedBytes)} · $threads 线程 · " +
+            "引擎就绪：${originLabel(chosen.origin)} · ${ModelStore.human(loadedBytes)} · $threads 线程 · " +
                 "${sampleRate / 1000} kHz · 加载 ${SystemClock.elapsedRealtime() - t0} ms"
         )
         // 「引擎」那行立刻从"未加载"变成"已就绪"，不然用户点完「开始推理」还得退出再进来
@@ -619,7 +674,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 多点一次不会有副作用 —— 用一次整页重建换一个按钮变灰不值
         // （重画会丢外层滚动位置，见 log/2026-10-23-报给宿主-重画丢位置.md）。
         // 真正需要按钮翻转的是 `nativeFree` 之后的 400 ms 那一声，那一次保留重画。
-        if (wasReady) notifyUiPatch("st_engine", "正在释放内存…", append = false)
+        if (wasReady) notifyUiPatch("st_engine", s(R.string.st_engine_unloading), append = false)
 
         runCatching { VoxCpm2Bridge.nativeFree() }
             .onFailure { Log.w(TAG, "nativeFree 失败", it) }
@@ -655,10 +710,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (!nativeReady || !VoxCpm2Bridge.nativeIsReady()) throw PluginException.notReady()
 
         val rawText = req.text.trim()
-        if (rawText.isEmpty()) throw PluginException.invalidRequest("文本为空")
+        if (rawText.isEmpty()) throw PluginException.invalidRequest(s(R.string.err_text_empty))
 
         val mode = req.mode
-        if (mode !in 0..2) throw PluginException.unsupported("不支持的合成模式：$mode")
+        if (mode !in 0..2) throw PluginException.unsupported(s(R.string.err_mode, mode))
 
         // 语音设计靠文本前缀实现，不是独立参数（见 SDK 里 SynthesisRequest 的注释）
         val design = req.voiceDescription.trim().ifBlank { voiceDesign.trim() }
@@ -674,14 +729,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         if (mode == 1 || mode == 2) {
             val fd = req.referenceAudio
-                ?: throw PluginException.invalidRequest("这个模式需要一段参考音频")
+                ?: throw PluginException.invalidRequest(s(R.string.err_need_ref))
 
             // 宿主把用户选的文档 open 成 FD 交过来。Binder 传参时系统 dup 过，
             // 所以我们手上这份是独立句柄、由我们负责关。
             //
             // 但不要直接拿它去解码：MediaExtractor 需要随机 seek，而 SAF 背后
             // 可能是个管道（网盘里的文档）。先复制到自己目录，再按本地路径解码。
-            out.stage(Stage.LOADING, "读取参考音频")
+            out.stage(Stage.LOADING, s(R.string.stage_read_ref))
             val raw = File(cache, "ref_in_${System.currentTimeMillis()}")
             val copied = try {
                 ParcelFileDescriptor.AutoCloseInputStream(fd).use { input ->
@@ -694,7 +749,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                             total += n
                             if (total > MAX_REFERENCE_BYTES) {
                                 throw IOException(
-                                    "文件超过 ${MAX_REFERENCE_BYTES / 1024 / 1024} MB，参考音频只要 5~10 秒"
+                                    s(R.string.err_ref_too_big, (MAX_REFERENCE_BYTES / 1024 / 1024).toInt())
                                 )
                             }
                             sink.write(buf, 0, n)
@@ -706,37 +761,35 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 Log.w(TAG, "参考音频读取失败", t)
                 raw.delete()
                 throw PluginException.invalidRequest(
-                    "参考音频读不出来：${t.message ?: t.javaClass.simpleName}。换一段本地音频试试。"
+                    s(R.string.err_ref_unreadable, t.message ?: t.javaClass.simpleName)
                 )
             }
             if (copied <= 0L) {
                 raw.delete()
-                throw PluginException.invalidRequest("参考音频是空文件")
+                throw PluginException.invalidRequest(s(R.string.err_ref_empty))
             }
             logLine("参考音频 ${ModelStore.human(copied)} 已复制到缓存")
 
-            out.stage(Stage.LOADING, "解码参考音频")
+            out.stage(Stage.LOADING, s(R.string.stage_decode_ref))
             val wav = File(cache, "ref_${System.currentTimeMillis()}.wav")
             val ok = AudioUtil.toReferenceWav(raw.absolutePath, wav)
             raw.delete()
             if (!ok) {
                 wav.delete()
                 logLine("参考音频解码失败")
-                throw PluginException.invalidRequest(
-                    "参考音频解码失败。换一段 5~10 秒、能正常播放的音频试试。"
-                )
+                throw PluginException.invalidRequest(s(R.string.err_ref_decode))
             }
             refWav = wav.absolutePath
 
             if (mode == 2) {
                 promptText = req.referenceTranscript.trim()
                 if (promptText.isEmpty()) {
-                    throw PluginException.invalidRequest("「极致克隆」需要参考音频的逐字稿")
+                    throw PluginException.invalidRequest(s(R.string.err_need_transcript))
                 }
             }
         }
 
-        out.stage(Stage.TEXT_ENCODE, "分析文本（${rawText.length} 字）")
+        out.stage(Stage.TEXT_ENCODE, s(R.string.stage_analyze, rawText.length))
         out.throwIfCancelled()
 
         val outFile = File(cache, "out_${System.currentTimeMillis()}.wav")
@@ -758,7 +811,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val estSec = (rawText.length * 0.22).coerceAtLeast(2.0)
         inferring = true
         inferPercent = 0.0
-        inferStage = "分析文本"
+        inferStage = s(R.string.infer_stage_analyze)
         notifyUiPatch(KEY_INFER_PROGRESS, "0.0", false)
 
         // 进度轮询：原生侧是阻塞调用，没有回调，只能这样量
@@ -771,11 +824,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     VoxCpm2Bridge.STAGE_GENERATING -> {
                         if (!announcedLoad) {
                             announcedLoad = true
-                            out.stage(Stage.DECODE, "开始生成…")
+                            out.stage(Stage.DECODE, s(R.string.stage_generate))
                         }
                         val sec = VoxCpm2Bridge.nativeAudioSeconds()
                         if (sec > 0.0) {
-                            out.stage(Stage.DECODE, "已生成 ${"%.1f".format(sec)} 秒")
+                            out.stage(Stage.DECODE, s(R.string.stage_generated, "%.1f".format(sec)))
                             pushInferProgress(sec, estSec)
                         }
                     }
@@ -809,23 +862,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 宿主在结果/错误回调里**不会**重画插件页（只更新功能区的提示），
             // 所以这一页的内容要自己喊一声，否则日志会停在"开始合成"。
             notifySchemaChanged()
-            throw PluginException(ErrCode.CANCELLED, "已取消")
+            throw PluginException(ErrCode.CANCELLED, s(R.string.err_cancelled))
         }
 
         if (!ok || !outFile.isFile || outFile.length() <= 44) {
             val nativeErr = VoxCpm2Bridge.nativeLastError()
             Log.e(TAG, "生成失败：$nativeErr")
-            logLine("生成失败：${nativeErr.ifBlank { "引擎没有产出音频" }}")
+            logLine("生成失败：${nativeErr.ifBlank { s(R.string.err_gen_no_audio) }}")
             inferPercent = 0.0
             notifySchemaChanged()
             throw PluginException(
                 ErrCode.PLUGIN_INTERNAL,
-                "生成失败：${nativeErr.ifBlank { "引擎没有产出音频" }}",
+                s(R.string.err_gen_failed, nativeErr.ifBlank { s(R.string.err_gen_no_audio) }),
                 retryable = true,
             )
         }
 
-        out.stage(Stage.AUDIO_DECODE, "封装 WAV")
+        out.stage(Stage.AUDIO_DECODE, s(R.string.stage_wrap))
         val seconds = AudioUtil.wavDurationSeconds(outFile)
 
         // 记住这一次，界面上的「上次」状态行直接读它（不用再算）
@@ -924,9 +977,11 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 打开界面时于 Binder 线程调用，所以只能是常量 map，不能做 IO。
      */
     override fun buildActionLabels(): Map<String, String> = mapOf(
-        ActionLabel.ENGINE_LOAD to "加载模型",
-        ActionLabel.ENGINE_UNLOAD to "释放模型",
-        ActionLabel.REASONING to ACTION_REASONING,
+        ActionLabel.ENGINE_LOAD to s(R.string.action_load),
+        ActionLabel.ENGINE_UNLOAD to s(R.string.action_unload),
+        // 「开始推理」也自己命名：下面的说明文案会引用它，两边必须是同一个词
+        ActionLabel.REASONING to s(R.string.action_reasoning),
+        ActionLabel.STOP to s(R.string.action_stop),
     )
 
     /**
@@ -975,33 +1030,34 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(key = GROUP_TABS, type = UiType.TABS_START, label = "")
 
         // ==================== 页 1 · 模型 ====================
-        items += UiItem(key = "tab_model", type = UiType.TAB, label = "模型")
+        items += UiItem(key = "tab_model", type = UiType.TAB, label = s(R.string.tab_model))
 
         items += UiItem(
-            key = "st_model", type = UiType.STATUS, label = "可用模型",
+            key = "st_model", type = UiType.STATUS, label = s(R.string.lbl_model_available),
             value = when {
-                readySet != null -> "${readySet.origin} · ${ModelStore.human(readySet.bytes)}"
-                installed > 0 -> "不完整 · 已有 ${ModelStore.human(installed)}"
-                else -> "没有可用的模型文件"
+                readySet != null ->
+                    "${originLabel(readySet.origin)} · ${ModelStore.human(readySet.bytes)}"
+                installed > 0 -> s(R.string.st_model_partial, ModelStore.human(installed))
+                else -> s(R.string.st_model_none)
             },
         )
         items += UiItem(
-            key = "st_engine", type = UiType.STATUS, label = "引擎",
+            key = "st_engine", type = UiType.STATUS, label = s(R.string.lbl_engine),
             value = when {
                 // 失败原因优先级最高：它是"为什么按不动"，必须留在这一行上。
                 // 以前它只写进页面下方的「提示」，而用户的眼睛在顶部 ——
                 // 他看到的是这行闪一下又变回"未加载"，看起来就是"点了没反应"。
                 engineNote.isNotEmpty() -> engineNote
-                nativeReady -> "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程"
-                engineLoading -> "正在加载…"
-                engineUnloading -> "正在释放内存…"
-                readySet != null -> "未加载 · 点下面「加载模型」"
-                else -> "未加载 · 先导入或下载"
+                nativeReady -> s(R.string.st_engine_ready, sampleRate / 1000, loadedThreads)
+                engineLoading -> s(R.string.st_engine_loading)
+                engineUnloading -> s(R.string.st_engine_unloading)
+                readySet != null -> s(R.string.st_engine_idle_tap)
+                else -> s(R.string.st_engine_idle_first)
             },
         )
         items += UiItem(
-            key = "st_disk", type = UiType.STATUS, label = "存储",
-            value = "剩 ${ModelStore.human(usable)} · 已占 ${ModelStore.human(installed)}",
+            key = "st_disk", type = UiType.STATUS, label = s(R.string.lbl_storage),
+            value = s(R.string.st_disk, ModelStore.human(usable), ModelStore.human(installed)),
         )
 
         // 加载 / 释放：插件自己调自己（引擎本来就归它）。
@@ -1010,15 +1066,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 用户进「模型」页是想"把它用起来"，手就停在这里；而功能区那对是
         // "我现在就想跑"的入口。两边都能按，状态也都会立刻同步。
         items += UiItem(
-            key = "en_load", type = UiType.ACTION, label = "加载模型",
+            key = "en_load", type = UiType.ACTION, label = s(R.string.action_load),
             // 只在**按不下去**时说原因。能按的时候不解释要花多久、占多少内存 ——
             // 那是第一次用才需要的知识，之后每天都看见就是噪音
-            help = if (readySet == null) "先导入或下载模型文件" else "",
+            help = if (readySet == null) s(R.string.help_need_model) else "",
             enabled = !nativeReady && !engineLoading && readySet != null && !engineUnloading,
             primary = !nativeReady && !engineLoading && readySet != null,
         )
         items += UiItem(
-            key = "en_unload", type = UiType.ACTION, label = "释放模型",
+            key = "en_unload", type = UiType.ACTION, label = s(R.string.action_unload),
             enabled = nativeReady && !engineUnloading,
         )
 
@@ -1033,30 +1089,30 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 那比两个明确的槽位更难懂。
         items += UiItem(
             key = ModelStore.ROLE_BASE_LM, type = UiType.MODEL_SLOT,
-            label = "主干模型 BaseLM",
-            value = if (importingRole == ModelStore.ROLE_BASE_LM) "正在复制…"
+            label = s(R.string.spec_base_q8),
+            value = if (importingRole == ModelStore.ROLE_BASE_LM) s(R.string.st_copying)
             else importedState(ModelStore.ROLE_BASE_LM),
             // help 只留**文件名**：这是选文件时唯一要对照的东西，不是一句说明
-            help = "VoxCPM2-BaseLM-*.gguf",
+            help = s(R.string.help_pattern_base),
             enabled = !nativeReady && !downloading && importingRole.isEmpty(),
         )
         items += UiItem(
             key = ModelStore.ROLE_ACOUSTIC, type = UiType.MODEL_SLOT,
-            label = "声学模型 Acoustic",
-            value = if (importingRole == ModelStore.ROLE_ACOUSTIC) "正在复制…"
+            label = s(R.string.spec_acoustic),
+            value = if (importingRole == ModelStore.ROLE_ACOUSTIC) s(R.string.st_copying)
             else importedState(ModelStore.ROLE_ACOUSTIC),
-            help = "VoxCPM2-Acoustic-*.gguf",
+            help = s(R.string.help_pattern_acoustic),
             enabled = !nativeReady && !downloading && importingRole.isEmpty(),
         )
 
         // ---- 下载 ----
-        items += UiItem(key = "sec_dl", type = UiType.SECTION, label = "下载")
+        items += UiItem(key = "sec_dl", type = UiType.SECTION, label = s(R.string.sec_download))
 
         items += UiItem(
-            key = "version", type = UiType.CHOICE, label = "模型版本",
+            key = "version", type = UiType.CHOICE, label = s(R.string.lbl_model_version),
             value = v.key,
             options = ModelStore.VERSIONS.map {
-                UiOption(it.key, "${it.label} · ${ModelStore.human(it.totalBytes)}")
+                UiOption(it.key, "${s(it.labelRes)} · ${ModelStore.human(it.totalBytes)}")
             },
             enabled = !downloading,
         )
@@ -1066,14 +1122,18 @@ class VoxCpm2PluginService : PonkoPluginService() {
             val f = ModelStore.fileFor(this, spec)
             val part = File(f.absolutePath + ".part")
             val state = when {
-                ModelStore.isReady(this, spec) -> "已就绪 · ${ModelStore.human(spec.bytes)}"
-                part.isFile -> "断点 · ${ModelStore.human(part.length())} / ${ModelStore.human(spec.bytes)}"
-                f.isFile -> "不完整 · ${ModelStore.human(f.length())}"
-                else -> "未下载 · ${ModelStore.human(spec.bytes)}"
+                ModelStore.isReady(this, spec) ->
+                    s(R.string.st_file_ready, ModelStore.human(spec.bytes))
+                part.isFile -> s(
+                    R.string.st_file_resumable,
+                    ModelStore.human(part.length()), ModelStore.human(spec.bytes),
+                )
+                f.isFile -> s(R.string.st_file_partial, ModelStore.human(f.length()))
+                else -> s(R.string.st_file_absent, ModelStore.human(spec.bytes))
             }
             items += UiItem(
                 key = "$KEY_FILE_PREFIX${spec.fileName}", type = UiType.STATUS,
-                label = spec.label, value = state,
+                label = s(spec.labelRes), value = state,
             )
         }
 
@@ -1083,7 +1143,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         ModelStore.sourcesFor(v.key).forEach { src ->
             items += UiItem(
                 key = "dl_${src.mirror.key}", type = UiType.ACTION,
-                label = "从 ${src.mirror.label} 下载",
+                label = s(R.string.btn_download_from, s(src.mirror.labelRes)),
                 enabled = !downloading && !versionReady,
                 primary = !downloading && !versionReady && src.mirror.key == mirrorKey,
             )
@@ -1091,27 +1151,34 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         if (downloading || (installed > 0 && !versionReady)) {
             items += UiItem(
-                key = KEY_DL_PROGRESS, type = UiType.PROGRESS, label = "下载进度",
+                key = KEY_DL_PROGRESS, type = UiType.PROGRESS,
+                label = s(R.string.lbl_download_progress),
                 // dlDetail 是实时速度 / 剩余时间，属于状态，不是说明
                 help = if (downloading) dlDetail else "",
                 value = "%.1f".format(if (downloading) dlPercent else 0.0),
             )
         }
         if (downloading) {
-            items += UiItem(key = "dl_cancel", type = UiType.ACTION, label = "取消下载")
+            items += UiItem(
+                key = "dl_cancel", type = UiType.ACTION,
+                label = s(R.string.btn_cancel_download),
+            )
         }
         if (installed > 0 && !downloading) {
             items += UiItem(
-                key = "dl_delete", type = UiType.ACTION, label = "删除已下载的模型",
-                help = "释放 ${ModelStore.human(installed)}",
+                key = "dl_delete", type = UiType.ACTION, label = s(R.string.btn_delete_models),
+                help = s(R.string.help_free_size, ModelStore.human(installed)),
             )
         }
         if (dlNotice.isNotEmpty()) {
-            items += UiItem(key = "st_notice", type = UiType.STATUS, label = "提示", value = dlNotice)
+            items += UiItem(
+                key = "st_notice", type = UiType.STATUS,
+                label = s(R.string.lbl_notice), value = dlNotice,
+            )
         }
 
         // ==================== 页 2 · 参数 ====================
-        items += UiItem(key = "tab_param", type = UiType.TAB, label = "参数")
+        items += UiItem(key = "tab_param", type = UiType.TAB, label = s(R.string.tab_param))
 
         // ★ 宿主的参数区 / 按钮行 / 诊断**分三段**挂（SDK v9.1 的 HOST_SLOT 分段）。
         //
@@ -1133,22 +1200,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         // 进度条紧跟按钮下面：合成一开头就能看到它动，不用翻到页底
         items += UiItem(
-            key = KEY_INFER_PROGRESS, type = UiType.PROGRESS, label = "推理进度",
+            key = KEY_INFER_PROGRESS, type = UiType.PROGRESS,
+            label = s(R.string.lbl_infer_progress),
             value = "%.1f".format(if (inferring) inferPercent else if (lastAudioSec > 0) 100.0 else 0.0),
         )
 
         items += UiItem(
-            key = "voice", type = UiType.TEXTAREA, label = "语音设计描述（默认）",
+            key = "voice", type = UiType.TEXTAREA, label = s(R.string.lbl_voice),
             value = voiceDesign,
         )
         items += UiItem(
-            key = "cfg", type = UiType.TEXT, label = "CFG 引导强度",
+            key = "cfg", type = UiType.TEXT, label = s(R.string.lbl_cfg),
             // cfgHint / stepsHint 只在**填错**时才有内容（校验回显），不是常驻说明
             help = cfgHint,
             value = trimNum(cfg.toDouble()),
         )
         items += UiItem(
-            key = "steps", type = UiType.TEXT, label = "扩散步数",
+            key = "steps", type = UiType.TEXT, label = s(R.string.lbl_steps),
             help = stepsHint,
             value = timesteps.toString(),
         )
@@ -1166,25 +1234,34 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // `value = "collapsed"` 是 SDK v7 起支持的默认收起（用户手动点开过后以用户为准）。
         items += UiItem(
             key = "g_diag", type = UiType.GROUP_START,
-            label = "插件内部状态", value = "collapsed",
+            label = s(R.string.grp_plugin_state), value = "collapsed",
         )
         items += UiItem(
-            key = "diag_dev", type = UiType.STATUS, label = "设备",
-            value = "$devCores 核 · ${devAbi.ifBlank { "未知 ABI" }} · " +
-                "内存 ${gb(devMemAvail)} / ${gb(devMemTotal)}",
+            key = "diag_dev", type = UiType.STATUS, label = s(R.string.lbl_device),
+            value = s(
+                R.string.diag_device_value,
+                devCores, devAbi.ifBlank { s(R.string.unknown_abi) },
+                gb(devMemAvail), gb(devMemTotal),
+            ),
         )
         items += UiItem(
-            key = "diag_engine", type = UiType.STATUS, label = "引擎",
+            key = "diag_engine", type = UiType.STATUS, label = s(R.string.lbl_engine),
             value = if (nativeReady)
-                "${loadedSourceKey.ifBlank { "—" }} · $loadedThreads 线程 · ${sampleRate} Hz · " +
-                    "占 ${ModelStore.human(loadedBytes)}"
-            else "未加载",
+                s(
+                    R.string.diag_engine_value,
+                    originLabel(loadedSourceKey), loadedThreads, sampleRate,
+                    ModelStore.human(loadedBytes),
+                )
+            else s(R.string.diag_engine_idle),
         )
         items += UiItem(
-            key = "diag_state", type = UiType.STATUS, label = "内部状态",
-            value = "下载 ${if (downloading) "进行中" else "空闲"} · " +
-                "推理 ${if (inferring) "进行中" else "空闲"} · " +
-                "日志 ${logCount()} 行",
+            key = "diag_state", type = UiType.STATUS, label = s(R.string.lbl_internal_state),
+            value = s(
+                R.string.diag_state_value,
+                if (downloading) s(R.string.diag_running) else s(R.string.diag_idle),
+                if (inferring) s(R.string.diag_running) else s(R.string.diag_idle),
+                logCount(),
+            ),
         )
         items += UiItem(key = "g_diag_end", type = UiType.GROUP_END)
 
@@ -1192,20 +1269,20 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val logs = logSnapshotForSchema()
         items += UiItem(
             key = "g_log", type = UiType.GROUP_START,
-            label = "运行日志", value = "collapsed",
+            label = s(R.string.lbl_runtime_log), value = "collapsed",
         )
         items += UiItem(
             key = KEY_LOG, type = UiType.LOG,
             value = logs,
         )
         items += UiItem(
-            key = "log_clear", type = UiType.ACTION, label = "清空日志",
+            key = "log_clear", type = UiType.ACTION, label = s(R.string.btn_clear_log),
             enabled = logs.isNotEmpty(),
         )
         items += UiItem(key = "g_log_end", type = UiType.GROUP_END)
 
         // ==================== 页 3 · 结果 ====================
-        items += UiItem(key = TAB_RESULT, type = UiType.TAB, label = "结果")
+        items += UiItem(key = TAB_RESULT, type = UiType.TAB, label = s(R.string.tab_result))
 
         // 页首锚点（0 高度，看不见）：跳过来之后 `notifyScrollTo` 滚到它。
         //
@@ -1222,27 +1299,30 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (lastAudioSec <= 0.0) {
             items += UiItem(
                 key = "res_empty", type = UiType.INFO,
-                label = "还没有结果 · 到「参数」页点「$ACTION_REASONING」",
+                label = s(
+                    R.string.res_empty,
+                    s(R.string.tab_param), s(R.string.action_reasoning),
+                ),
             )
         } else {
             items += UiItem(
-                key = "res_seed", type = UiType.STATUS, label = "种子",
+                key = "res_seed", type = UiType.STATUS, label = s(R.string.lbl_seed),
                 value = "$lastSeed",
             )
             items += UiItem(
-                key = "res_param", type = UiType.STATUS, label = "参数",
-                value = "cfg ${trimNum(lastCfg.toDouble())} · 扩散 $lastSteps 步 · " +
+                key = "res_param", type = UiType.STATUS, label = s(R.string.lbl_params),
+                value = "cfg ${trimNum(lastCfg.toDouble())} · steps $lastSteps · " +
                     modeName(lastMode) + " · ${"%.1f".format(lastAudioSec)} s / ${lastGenMs / 1000} s" +
                     " · RTF ${"%.1f".format(lastRtf)}",
             )
             items += UiItem(
-                key = "res_text", type = UiType.STATUS, label = "目标文本",
+                key = "res_text", type = UiType.STATUS, label = s(R.string.lbl_target_text),
                 value = preview(lastText),
             )
             // 播放条：播的是**宿主**那个播放器（它持有最近一次合成的产物）。
             // 插件在另一个进程，自己播的话退出这一页声音还在响，宿主管不到。
             items += UiItem(
-                key = "audio", type = UiType.AUDIO, label = "这次的结果",
+                key = "audio", type = UiType.AUDIO, label = s(R.string.lbl_result_audio),
             )
         }
 
@@ -1258,25 +1338,25 @@ class VoxCpm2PluginService : PonkoPluginService() {
         if (hist.isNotEmpty()) {
             items += UiItem(
                 key = "sec_hist", type = UiType.SECTION,
-                label = "历史",
+                label = s(R.string.sec_history),
             )
             hist.forEach { r ->
                 items += UiItem(
                     key = "h${r.index}_meta", type = UiType.STATUS,
-                    label = "#${r.index} · 种子 ${r.seed}",
-                    value = "cfg ${trimNum(r.cfg.toDouble())} · 扩散 ${r.steps} · " +
+                    label = "#${r.index} · seed ${r.seed}",
+                    value = "cfg ${trimNum(r.cfg.toDouble())} · steps ${r.steps} · " +
                         modeName(r.mode) + " · ${"%.1f".format(r.audioSec)} s / ${r.genMs / 1000} s",
                 )
                 items += UiItem(
                     key = "h${r.index}_text", type = UiType.STATUS,
-                    label = "文本（${r.chars} 字）", value = r.text,
+                    label = s(R.string.res_text_chars, r.chars), value = r.text,
                 )
                 // 只有真的送过文件的才画：没送成功（或这一版之前生成的老记录）
                 // 画出来也只会放最新那条，那是骗人
                 if (r.hasAudio) {
                     items += UiItem(
                         key = historyAudioKey(r.index), type = UiType.AUDIO,
-                        label = "#${r.index} 试听",
+                        label = s(R.string.hist_audio, r.index),
                     )
                 }
             }
@@ -1325,18 +1405,18 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 模型就绪之后连这一行也不该占地方 —— 那时用户只需要知道按钮在哪。
      */
     private fun buildIntro(ready: Boolean, installed: Long): String = when {
-        importingRole.isNotEmpty() -> "正在复制模型文件…"
-        downloading -> "正在下载 ${"%.0f".format(dlPercent)}%"
-        ready && nativeReady -> "填「文本」，点「$ACTION_REASONING」"
-        ready -> "点「加载模型」，或直接点「$ACTION_REASONING」"
-        installed > 0 -> "模型不完整 · 点「模型」页继续下载"
-        else -> "先到「模型」页下载或导入模型"
+        importingRole.isNotEmpty() -> s(R.string.intro_copying)
+        downloading -> s(R.string.intro_downloading, "%.0f".format(dlPercent))
+        ready && nativeReady -> s(R.string.intro_ready_fill, s(R.string.action_reasoning))
+        ready -> s(R.string.intro_ready_tap, s(R.string.action_reasoning))
+        installed > 0 -> s(R.string.intro_partial)
+        else -> s(R.string.intro_empty)
     }
 
     private fun modeName(m: Int): String = when (m) {
-        0 -> "普通合成"
-        1 -> "声音克隆"
-        2 -> "极致克隆"
+        0 -> s(R.string.mode_plain)
+        1 -> s(R.string.mode_clone)
+        2 -> s(R.string.mode_clone_verbatim)
         else -> "—"
     }
 
@@ -1353,7 +1433,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 prefs.edit().putString(KEY_VERSION, versionKey).apply()
                 dlNotice = ""
                 // 换版本 = 换一套文件，进度条和"断点"的读数全变了，整页刷一次
-                logLine("切换模型版本：${ModelStore.version(versionKey).label}")
+                logLine("切换模型版本：${s(ModelStore.version(versionKey).labelRes)}")
                 notifySchemaChanged()
             }
             "voice" -> {
@@ -1366,8 +1446,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 val raw = value.trim()
                 val v = raw.toFloatOrNull()
                 if (v == null || v < 1f || v > 4f) {
-                    cfgHint = if (raw.isEmpty()) "不能为空，保留 ${trimNum(cfg.toDouble())}"
-                    else "「${raw.take(8)}」不是 1.0~4.0 的数，保留 ${trimNum(cfg.toDouble())}"
+                    cfgHint = if (raw.isEmpty()) s(R.string.hint_cfg_empty, trimNum(cfg.toDouble()))
+                    else s(R.string.hint_cfg_bad, raw.take(8), trimNum(cfg.toDouble()))
                 } else {
                     // 只留两位小数：界面上的值和真正用的值必须是同一个，否则显示 2.33 实际跑 2.3333
                     cfg = Math.round(v * 100f) / 100f
@@ -1380,8 +1460,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 val raw = value.trim()
                 val v = raw.toIntOrNull()
                 if (v == null || v < 4 || v > 24) {
-                    stepsHint = if (raw.isEmpty()) "不能为空，保留 $timesteps"
-                    else "「${raw.take(8)}」不是 4~24 的整数，保留 $timesteps"
+                    stepsHint = if (raw.isEmpty()) s(R.string.hint_steps_empty, timesteps)
+                    else s(R.string.hint_steps_bad, raw.take(8), timesteps)
                 } else {
                     timesteps = v
                     stepsHint = ""
@@ -1426,17 +1506,17 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // ---- 下载：一个镜像一个按钮 ----
             "dl_cancel" -> {
                 dlCancel.set(true)
-                dlNotice = "正在取消…"
+                dlNotice = s(R.string.nt_cancelling)
                 logLine("用户点取消下载")
                 notifySchemaChanged()
             }
             "dl_delete" -> {
                 if (nativeReady) {
-                    dlNotice = "引擎正在使用模型，请先在插件卡片上停用，再回来删除"
+                    dlNotice = s(R.string.nt_delete_blocked)
                     logLine("删除被拒：引擎正在使用模型")
                 } else {
                     val freed = ModelStore.deleteAll(this)
-                    dlNotice = "已删除已下载的模型，释放 ${ModelStore.human(freed)}"
+                    dlNotice = s(R.string.nt_deleted, ModelStore.human(freed))
                     dlPercent = 0.0
                     logLine("已删除已下载的模型，释放 ${ModelStore.human(freed)}")
                 }
@@ -1542,7 +1622,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
         }
 
         importingRole = role
-        val label = if (role == ModelStore.ROLE_ACOUSTIC) "声学模型" else "主干模型"
+        val label = s(
+            if (role == ModelStore.ROLE_ACOUSTIC) R.string.spec_acoustic else R.string.spec_base_q8
+        )
         logLine("开始导入${label}：${displayName.ifBlank { "未命名" }}（${ModelStore.human(sizeBytes)}）")
         notifySchemaChanged()
 
@@ -1584,7 +1666,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
             logLine("导入完成：${label} · ${ModelStore.human(dst.length())} → ${dst.name}")
             refreshDeviceStats()
         } else {
-            dlNotice = "导入${label}失败，换一个文件试试"
+            dlNotice = s(R.string.nt_import_failed, label)
             logLine("导入失败：$role")
         }
         notifySchemaChanged()
@@ -1598,7 +1680,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
      */
     override fun onModelDeleteRequested(role: String) {
         if (nativeReady) {
-            dlNotice = "引擎正在运行，先「释放模型」再清除"
+            dlNotice = s(R.string.nt_clear_blocked)
             logLine("清除被拒：引擎正在运行（$role）")
             notifySchemaChanged()
             return
@@ -1608,7 +1690,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val ok = !f.exists() || f.delete()
         logLine(if (ok) "已清除导入的文件：$role（${ModelStore.human(freed)}）"
         else "清除失败：$role")
-        dlNotice = if (ok) "已清除导入的文件（${ModelStore.human(freed)}）" else "清除失败"
+        dlNotice = if (ok) s(R.string.nt_cleared, ModelStore.human(freed))
+        else s(R.string.nt_clear_failed_plain)
         notifySchemaChanged()
     }
 
@@ -1625,7 +1708,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // 的组合说明是"切了版本、按钮还是旧的"这类竞态 —— 说清楚比静默失败好
         val src = ModelStore.source(versionKey, mirror)
         if (src == null) {
-            dlNotice = "这套组合没有下载源：${ModelStore.version(versionKey).label} × $mirror"
+            dlNotice = s(
+            R.string.nt_no_source,
+            s(ModelStore.version(versionKey).labelRes), mirror,
+        )
             logLine("下载中止：$dlNotice")
             notifySchemaChanged()
             return
@@ -1637,7 +1723,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val need = src.totalBytes
         val free = ModelStore.usableSpace(this)
         if (free < need + 256L * 1024 * 1024) {
-            dlNotice = "空间不够：需要 ${ModelStore.human(need)}，只剩 ${ModelStore.human(free)}"
+            dlNotice = s(R.string.nt_low_space, ModelStore.human(need), ModelStore.human(free))
             logLine("下载中止：$dlNotice")
             notifySchemaChanged()
             return
@@ -1646,9 +1732,12 @@ class VoxCpm2PluginService : PonkoPluginService() {
         downloading = true
         dlCancel.set(false)
         dlPercent = 0.0
-        dlDetail = "准备中…"
+        dlDetail = s(R.string.dl_preparing)
         dlNotice = ""
-        logLine("开始下载 ${src.label} · ${ModelStore.human(src.totalBytes)}")
+        logLine(
+            "开始下载 ${s(src.version.labelRes)} · ${s(src.mirror.labelRes)} · " +
+                ModelStore.human(src.totalBytes)
+        )
         notifySchemaChanged()
 
         val t = Thread({
@@ -1662,13 +1751,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     val r = ModelStore.download(this, src, spec, dlCancel) { got, total ->
                         val overall = ((base + got).toDouble() / src.totalBytes * 100.0)
                         dlPercent = overall.coerceIn(0.0, 100.0)
-                        dlDetail = "${spec.label}：${ModelStore.human(got)} / ${ModelStore.human(total)}" +
-                            "（总进度 ${"%.0f".format(overall)}%）"
+                        dlDetail =
+                            "${s(spec.labelRes)}: ${ModelStore.human(got)} / ${ModelStore.human(total)}" +
+                                s(R.string.dl_overall_suffix, "%.0f".format(overall))
                         // 日志每 10% 记一行 —— 日志框现在是增量追加的，不心疼；
                         // 但 10% 一条已经够看清进度了，再密就是噪声
                         if (overall - loggedPct >= 10.0) {
                             loggedPct = overall
-                            logLine("下载 ${"%.0f".format(overall)}% · ${spec.label} " +
+                            logLine("下载 ${"%.0f".format(overall)}% · ${s(spec.labelRes)} " +
                                 "${ModelStore.human(got)}/${ModelStore.human(total)}")
                         }
                         // 进度**走原地补丁**，不再整页重建：这个回调一秒来几十次，
@@ -1676,7 +1766,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
                         pushDownloadProgress(spec, got, total)
                     }
                     if (r.isFailure) {
-                        failed = r.exceptionOrNull()?.message ?: "下载失败"
+                        failed = r.exceptionOrNull()?.message ?: s(R.string.dl_failed_plain)
                         break
                     }
                     done += spec.bytes
@@ -1685,17 +1775,19 @@ class VoxCpm2PluginService : PonkoPluginService() {
                     notifySchemaChanged()
                 }
             } catch (t: Throwable) {
-                failed = t.message ?: "下载异常"
+                failed = t.message ?: s(R.string.dl_error)
             } finally {
                 downloading = false
                 dlDetail = ""
                 dlNotice = when {
-                    dlCancel.get() -> "已取消，下次继续会从断点续传"
-                    failed != null -> "下载失败：$failed"
+                    dlCancel.get() -> s(R.string.dl_cancelled)
+                    failed != null -> s(R.string.dl_failed_with, failed)
                     ModelStore.isVersionReady(this, src.version) ->
-                        "下载完成（${ModelStore.human(src.totalBytes)}）。" +
-                            "现在可以点「加载模型」，或者直接点「$ACTION_REASONING」（会先加载再合成）。"
-                    else -> "下载中断，再点一次同一个镜像可以接着下"
+                        s(
+                            R.string.dl_done,
+                            ModelStore.human(src.totalBytes), s(R.string.action_reasoning),
+                        )
+                    else -> s(R.string.dl_interrupted)
                 }
                 refreshDeviceStats()
                 logLine("下载结束：$dlNotice")
@@ -1731,7 +1823,6 @@ class VoxCpm2PluginService : PonkoPluginService() {
          * 只在这里写一次 —— 下面那些指路文案（"到参数页点…"）全部插值引用它，
          * 以后改名不会漏掉某一句，出现"照着文案找按钮却找不到"。
          */
-        private const val ACTION_REASONING = "开始推理"
 
         /**
          * 最外层页签组的 key（`TABS_START`）。
