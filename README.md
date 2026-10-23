@@ -1,273 +1,182 @@
-# Ponko-EX · VoxCPM2
+# Ponko-EX
 
-给 [Ponko](https://github.com/visitor257/Ponko) 用的语音合成插件：
-把 [VoxCPM2](https://modelscope.cn/models/OpenBMB/VoxCPM2)（OpenBMB，2B）放进手机里**离线**跑。
+Ponko 的插件工程。**与宿主 Ponko 分开的独立工程**，只依赖插件 SDK 的 AAR，
+不碰宿主任何实现代码。
+
+- 宿主（Ponko）：<https://github.com/visitor257/Ponko>
+- 插件开发手册：[`doc/plugin-guide.md`](doc/plugin-guide.md)
 
 [English](README.en.md)
 
-**4.6 MB 的插件 + 2.8～3.6 GB 模型（首次自己下或导入）= 一个不联网的 TTS。**
-没有服务端、没有 API key、没有遥测。飞行模式也能念。
+## 插件
 
-|  |  |
-|---|---|
-| 宿主 | Ponko **2.0.0** 及以上（主线 `LiteRT-Chat`） |
-| 平台 | Android 9+（minSdk 28）· **arm64-v8a only** |
-| 内核 | llama.cpp-omni 的 `voxcpm2_runtime` + 自写 JNI（静态链接，5.8 MB） |
-| 许可 | 代码 MIT · VoxCPM2 权重 Apache-2.0（见 [NOTICE.md](plugins/voxcpm2/NOTICE.md)） |
-
-## 能做什么
-
-- **30 种语言 + 9 种中文方言**，不用打语种标签，模型自己认
-- **音色设计**：`(年轻女性，声音温柔甜美)你好呀` —— 括号里写描述，凭空造一个不存在的声音
-- **零样本克隆**：一段 5～10 秒干净音频，复制音色
-- **极致克隆**：参考音频 + 它的逐字稿，连停顿和语气一起还原
-- **48 kHz 输出**，AudioVAE 解码端直接出，不做二次超分
-
-## 装
-
-1. 装 `Ponko-EX_VoxCPM2_release.apk`
-2. 打开 Ponko →「插件」→ 启用「VoxCPM2」
-3. 「模型」页：选版本（标准 Q8 3.55 GB / 精简 Q4 2.83 GB）→ 点一个镜像下载
-   （支持断点续传，**建议 Wi-Fi**）；**或者**从本地导入两份 `.gguf`
-   （主干模型 + 声学模型，各自一个槽位）
-4. 点「加载模型」（约 10～30 秒），「引擎」那行变成「已就绪」就能合成
-
-> 加载这一步**要自己点**。宿主从 2.0.0 起不再替所有插件自动加载 ——
-> 只有声明了 `AUTOLOAD_ENGINE` 的轻量插件才连上即加载，这个插件要占 3.5 GB，
-> 故意没声明。直接点「合成语音」也行，它会先加载再合成，只是看不到加载进度。
-> 想腾内存随时点「释放模型」。
-
-> 功能区是**一个动作一个按钮**：`加载/释放模型 · 合成语音 · 播放 · 停止 · 保存`。
-> 它由宿主画、在插件页最上面（三页标签在它下面）—— 因为**发起合成的只能是宿主**：
-> 结果要走宿主那条 `ResultBundle` 通道才能变成可播放、可保存的音频，插件自己
-> 推的东西会被请求门禁丢掉。所以「开始推理」这件事，入口就是那个「合成语音」按钮。
->
-> **「合成语音」只跑推理、产出文件，不出声** —— 合成完再点「播放」才听得到（宿主的提示里也写了）。
-> 「播放」直接放上一次的文件，**不重新推理**；手机上一段 5 秒语音要等 1～2 分钟，
-> 想再听一遍别去点「合成语音」。
->
-> 「结果」页里有一条**播放条**（SDK v4 的 `UiType.AUDIO`）：它和上面那个「播放」
-> 按钮是**同一个播放器**（宿主自己的），区别是可以看时间、可以拖进度 ——
-> 一两分钟的长音频想听某一句，只能靠拖。
->
-> 按钮叫什么由插件定（SDK v3 的 `buildActionLabels()`）。宿主默认那套词是
-> 「加载引擎 / 卸载引擎 / 合成 / 播放 / 停止 / 保存」，这里换了两处：
-> 加载的是模型不是引擎；卸载之后文件还在磁盘上（所以叫「释放」）。
-> 播放 / 停止 / 保存用宿主默认。
-
-> **宿主得认识 v6。** 这版插件用 SDK v6 编（三页标签 + 日志框 + 播放条 + 模型槽位），
-> 宿主得是含 2026-10-22 那批 SDK 更新的那版。再早的宿主要分几种情况：
->
-> - v3 及更早（还在按区间拒绝的那版）：直接拒绝绑定，提示版本不兼容 ——
->   它在拿到 schema 之前就被挡下了，没有降级的余地。
-> - v4/v5：能连，界面也基本能用，但 `MODEL_SLOT`（本地导入那两行）不认识 →
->   降级成「未知控件」文字块，**从本地导入这条路用不了**，只能用下载。
->   功能不受影响。想用导入就更新 Ponko。
->
-> 顺带说清楚方向：宿主从 `181dcf5` 起**只拒绝比自己旧的插件**，比它新的照常连，
-> 不认识的控件降级成「标签 + 值 + 需要更新 Ponko」的文字块。
-
-> **签名必须和宿主一致。** 宿主用 `protectionLevel="signature"` 保护插件绑定，
-> 密钥不一致时 `bindService` 直接抛 `SecurityException`，界面上只会显示「绑定失败」。
-> 这个包是用 Ponko 主线那把 `ponko-release.jks` 签的；换 `hw` 线的宿主装就要重签。
-
-## 用
-
-### 宿主侧：合成参数
-
-Ponko 2.0.0 的插件页给了一块「合成参数」，这些值会真的进 `SynthesisRequest`：
-
-| 参数 | 说明 |
-|---|---|
-| 文本 | 没有硬性字数上限（插件不截断）。手机 RTF 10～30，40 字已经要等几分钟 |
-| 模式 | 纯 TTS / 克隆 / 极致克隆 |
-| 参考音频 | 从文件选，宿主 open 成 FD 交过来；插件自己解码、重采样到 16 kHz |
-| 逐字稿 | 仅「极致克隆」必填 |
-| 种子 | `0` = 随机。固定它才能复现同一段演绎 |
-| 推理线程 | 自动（核数-1）/ 2 / 4 / 6，改动在下次「加载模型」时生效 |
-
-生成中点「停止」会真的打断：插件把宿主的取消意图转成 `nativeCancel()`，
-原生在音频回调里逐块检查，一般几秒内退出（取决于当时卡在哪个阶段）。
-
-### 插件侧：自己的设置
-
-宿主不传 `cfg` / `timesteps` —— 合理范围强依赖模型，这两项由插件自己在界面里给。
-种子和线程数两边都有：**插件页填了就压过宿主的**（这就是它们存在的理由），
-留空才跟随宿主：
-
-| 项 | 默认 | 范围 | 说明 |
+| 插件 | 做什么 | 分支 | 最新发布 |
 |---|---|---|---|
-| CFG 引导强度 | 2.0 | 1.0–4.0 | 越大越贴文本，越小越自由 |
-| 扩散步数 | 10 | 4–24 | 越多越细，但线性变慢 |
-| 随机种子 | 空（随机） | 整数 | 填了就固定，「结果」页会显示这次实际用的种子 |
-| 推理线程 | 空（跟随 Ponko） | 1–8 | 改了**下次加载模型**才生效 |
-| 语音设计描述 | 空 | — | 等价于宿主传 `voiceDescription`；两边都空就不加前缀 |
+| VoxCPM2 语音合成 | 本地文本转语音，纯手机 CPU 推理 | `Ponko-EX_VoxCPM2` | [0.9.0](https://github.com/visitor257/Ponko-EX/releases/tag/voxcpm2-0.9.0) |
+| Echo | 不做什么，只为验证插件链路、当模板 | `Ponko-EX_test` | — |
 
-插件界面分**三页**（SDK v5 的标签页，最外层所以能左右滑动切换）。切页是纯显隐，
-不重建 —— 切回来时输入框内容、滚动位置都还在，停在哪个页签也会被记住：
+## 下载与安装
 
-| 页 | 内容 |
-|---|---|
-| 模型 | 可用模型 / 引擎 / 存储三行状态 · 加载 / 释放 · **本地导入**（两个槽位）· 下载（版本、逐文件状态、镜像按钮、进度、取消、删除） |
-| 参数 | 语音设计描述 / CFG / 扩散步数 / 种子 / 线程 · 推理进度条 · 上次参数与耗时 · 诊断（可折叠）· 运行日志 + 清空 |
-| 结果 | 上次的种子 / 参数 / 目标文本 / 播放条；推理历史（本次运行最多 5 条，只有元数据） |
+**宿主先装**：Ponko 2.0.0 或更新版本，<https://github.com/visitor257/Ponko/releases>。
+插件通过宿主的插件 SDK 通信，宿主低于 2.0.0（插件 API 12）装上也连不上。
 
-**目标文本、合成模式、参考音频、逐字稿不在插件页里** —— 它们在宿主顶部的「功能」区
-参数里。这不是偷懒：那四项是"这一次调用怎么发"，由发起方（宿主）决定，
-插件只是被动接受一份 `SynthesisRequest`。插件页摆一个改了不生效的文本框更糟。
+**插件**：[Releases](https://github.com/visitor257/Ponko-EX/releases) 页下载
+`Ponko-EX_VoxCPM2_0.9.0.apk`，当普通 APK 安装。
 
-**运行日志**用的是宿主的 `UiType.LOG`（SDK v4）：固定 160 dp 高、内部自己滚、
-长按可复制，只留最近 120 行。新行是**增量补丁**推上去的（`notifyUiPatch`），
-不是靠整页重画 —— 所以日志滚动位置、你正在填的「语音设计描述」都不会被冲掉。
-翻上去看历史时，新日志也**不会把你拽回底部**（宿主只在原本就停在底部时才跟随）。
-下载进度和推理进度同理，只改进度条那一格。
+要求与注意：
 
-## 三种模式
+- Android 9+（minSdk 28）、arm64，**建议 8 GB 内存**
+- 发布包已用**宿主的密钥**签好 v1 + v2 + v3。宿主用 `protectionLevel="signature"`
+  的权限保护插件绑定，签名不同 `bindService` 直接抛 `SecurityException` ——
+  自己重编的话见下面「签名」一节
+- **权重不在 APK 里**。首次使用到插件「模型」页下载（标准 Q8 约 3.55 GB /
+  精简 Q4 约 2.83 GB，支持断点续传、三个镜像），或者自行导入两份 GGUF
+  （BaseLM + Acoustic）。下载一份要留出「文件大小 + 同样大小的内存副本」的空间
+- 纯 CPU 推理：5 秒语音大约 1~2 分钟
 
-| 模式 | 需要什么 | 适合 |
+装完的用法：Ponko → 插件 → VoxCPM2 → 「模型」页备好权重 → **加载模型** → **开始推理**。
+
+校验：
+
+```bat
+certutil -hashfile Ponko-EX_VoxCPM2_0.9.0.apk SHA256
+apksigner verify --verbose --min-sdk-version 23 Ponko-EX_VoxCPM2_0.9.0.apk
+```
+
+0.9.0 的 sha256 是 `a44f55c8b2729990841f5f63e386e54c786648323e1e23338b8ff80c8b06a9c8`，
+4,699,635 字节。
+
+## 一条线一件事
+
+这个仓库用**分支**分线。同一份工作树，`git checkout` 切过去就是另一条线。
+
+| 分支 | 内容 | 用途 |
 |---|---|---|
-| 纯 TTS（0） | 文本 | 通用朗读，默认 |
-| 克隆（1） | 参考音频 | 想要某个音色，但内容随便说 |
-| 极致克隆（2） | 参考音频 + 逐字稿 | 复刻一段演绎：节奏、停顿、语气 |
+| `main` | 本 README、`doc/`、`log/` + 构建骨架，**没有任何插件模块** | 主线。文档和约定都住这儿 |
+| `Ponko-EX_test` | 上面全部 + `plugins/echo`（Echo 测试插件） | 测试线。验证链路、当模板 |
+| `Ponko-EX_VoxCPM2` | 上面全部 + `plugins/voxcpm2`（VoxCPM2 语音合成） | 插件线。发布版从这儿出 |
 
-**参考音频怎么选**：5～10 秒、单人、无背景音乐、无混响。wav / mp3 / m4a / flac
-都行（插件用 `MediaCodec` 解码，再重采样到 16 kHz）。
+```bash
+git checkout Ponko-EX_test     # 去测试线，要编 Echo 就切过去
+git checkout main              # 回主线，只有文档
+```
 
-## 模型文件
+**为什么插件模块不在主线**：主线留给文档和约定，模型家族各占一条线
+（VoxCPM2 等）。测试插件是脚手架 —— 它验完链路、被抄成模板之后就该让位，
+不该长期占着主线的位置。
 
-不进 APK：2.8～3.6 GB 没法发版。两条路都行：
+> ⚠ 在 `main` 上跑构建会提示「没有插件模块」。那是**预期行为**，不是坏了。
 
-**从本地导入**（SDK v6）：插件页「模型」页有两个槽位 —— 主干模型 BaseLM、声学模型
-Acoustic —— 各点一次「导入」，由宿主弹系统文件选择器，插件把文件复制进自己的
-私有目录（`files/imported/`）。选择器必须宿主弹：插件是 bound Service，没有
-`startActivityForResult`，Android 10+ 也禁止它后台启动 Activity。
-**导入优先于下载**（导入了就用导入的）。
+## 目录
 
-**下载**：下到 `Android/data/com.litertchat.plugin.voxcpm2/files/models/`。
+```
+Ponko-EX/
+├── README.md / README.en.md        本文件（中 / 英）
+├── doc/
+│   ├── plugin-guide.md             插件开发手册
+│   └── plugin-guide.en.md          同上（英）
+├── log/
+│   ├── README.md                   这个文件夹是什么
+│   └── 2026-10-21-*.md             开发过程中的问题记录（中文，不正式）
+├── settings.gradle.kts             本地 maven 仓库指向插件 SDK
+├── build.gradle.kts                KGP 版本必须与宿主一致
+├── gradle.properties
+├── tools/build.bat                 纯 ASCII；载入 MSVC 环境后**就地构建**
+├── tools/push-via-api.py           git push 不通时用 REST API 推送
+└── plugins/                        只在插件线上存在
+    ├── echo/                       Ponko-EX_test
+    └── voxcpm2/                    Ponko-EX_VoxCPM2
+```
 
-| 版本 | BaseLM | Acoustic | 合计 | 备注 |
-|---|---|---|---|---|
-| **标准 Q8**（默认） | Q8_0 1.73 GB | F16 1.83 GB | **3.55 GB** | 仓库明确声明 `apache-2.0`；音质略好 |
-| 精简 Q4 | Q4_K_M 1.00 GB | F16 1.83 GB | **2.83 GB** | 第三方 GGUF 转换件，**仓库未声明许可**；**独立测试版用的是这套** |
+## 文档在哪
 
-镜像按版本给，**只列真的存在的组合**：
-
-| 版本 | hf-mirror | HuggingFace | 魔搭 ModelScope |
-|---|---|---|---|
-| 精简 Q4 | ✅ `tc-mb/MiniCPM-V-Apps-gguf` | ✅ 同一个仓库（国内通常打不开） | ✅ `zerg13/MiniCPM-V-Apps-gguf` |
-| 标准 Q8 | ❌ | ❌ | ✅ `DennisHuang/VoxCPM2-GGUF` |
-
-标准版的 Q8_0 在 HuggingFace 上**没有对应仓库**（hf-mirror 拉那个路径是 404，
-它只代理 HF 上真有的东西），所以标准版只挂魔搭 —— 与其画一个点下去 404 的
-「从 HuggingFace 下载」，不如不画。
-
-都走 HTTP `Range` 断点续传：中断了再点同一个镜像接着下。
-默认标准版不是因为它音质好多少，是因为**归属清楚**：将来分发带模型的整包时，
-不需要为许可再解释一遍。
-
-两套里的 `Acoustic` 是同一个文件；**`BaseLM` 和 `Acoustic` 必须来自同一次发布**，
-混搭会出噪声。
-
-## 性能预期
-
-| | |
+| 想知道 | 看 |
 |---|---|
-| RTF | 手机纯 CPU 约 **10～30**（桌面 4090 是 0.3） |
-| 5 秒语音 | 约 **1～2 分钟** |
-| 内存 | 权重 3.55 GB + KV cache，**建议 8 GB 机型**；加载前会预检可用内存 |
-| 磁盘 | 4 GB（权重 + 缓存） |
+| 怎么写一个插件、接口长什么样、UI 配置怎么给 | [`doc/plugin-guide.md`](doc/plugin-guide.md) |
+| 为什么某个东西是这么设计的、踩过哪些坑 | [`log/`](log/) |
 
-6 GB 机型不一定跑得动：加载前会报「可用 X GB，需要 Y GB」而不是让系统 OOM 掉整个进程。
+手册是**怎么用**，`log/` 是**为什么**。遇到"照着写却跑不通"的情况，
+先翻 `log/` —— 大概率有人踩过了。
+
+## 前置：先发布插件 SDK
+
+插件依赖 `com.litertchat.ponko:plugin-sdk` 的 AAR，它由**宿主**发布到本地 maven 仓库：
+
+```bat
+:: 在宿主的构建沙箱里跑
+tools\build-android.bat :ponko-plugin-sdk:publishReleasePublicationToLocalRepoRepository
+```
+
+产物落在本地 maven 仓库（路径见 `settings.gradle.kts` 里的 `maven { url = ... }`）。
+
+> ⚠ **AIDL 或 Parcelable 一改就必须重新发布**，否则这边编出来的插件用的还是旧接口。
+> 症状是运行时 `NoSuchMethodError`，或者 Parcel 读写错位读出乱值 —— 很难查。
+>
+> 反过来也一样：**只重编宿主不重编插件是没用的**，插件消费的是 maven 里那份 AAR。
 
 ## 构建
 
-工程路径是纯 ASCII，AGP 直接接受，**就地构建**，不用同步到沙箱。
+工程路径是纯 ASCII，AGP 直接接受，所以**就地构建**，不需要同步到沙箱。
 
 ```bat
 tools\build.bat :plugins:voxcpm2:assembleRelease
 ```
 
-产物是未签名的：
+产物：`plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk`
 
-```
-plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk
-```
+`tools\build.bat` 里面做了三件事，缺一个都编不出来：
 
-用宿主那把密钥签名（固定 v1 + v2 + v3 三方案全开）：
+1. 载入 MSVC 环境（`vcvars64.bat`）—— 没有它 CMake 找不到 build program
+2. 指定 JDK 17 / Android SDK
+3. 调 gradle，带 `--no-daemon`
+
+**别用 `gradlew`**：本机 wrapper 的 dists 是空的，跑起来只会卡住或报错。
+
+> ⚠ `.bat` 必须**纯 ASCII**。cmd.exe 按 GBK 解析 .bat，中文注释会被拆行、
+> 打断 if 块，历史上真出现过脚本自己刷自己 22 MB 日志。
+
+## 签名（关键）
+
+宿主用 `protectionLevel="signature"` 的权限保护插件绑定，
+**插件必须用同一把密钥签名**，否则 `bindService` 直接抛 `SecurityException`。
+
+用宿主项目里的签名脚本（它固定 v1 + v2 + v3 三方案全开）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File <宿主>\tools\sign-apk.ps1 `
-  -Apk <unsigned.apk> -Out ...\Ponko-EX_VoxCPM2_release.apk
+  -Apk <unsigned.apk> -Out <signed.apk>
 ```
 
-**别用 `gradlew`**：本机 wrapper 的 dists 是空的。`tools\build.bat` 负责载入 MSVC 环境、
-指定 JDK 17 / Android SDK，并带 `--no-daemon`。
+密钥和口令都**不进仓库**：`.gitignore` 已经挡住 `*.jks` / `*.keystore` /
+`keystore.properties`。脚本从 `keystore.properties` 或环境变量读口令。
 
-原生库**不在这里编**。`libvoxcpm2jni.so` 是预编译产物（NDK 27 + CMake 交叉编译
-arm64，静态链接 `voxcpm2_runtime`，`llvm-strip` 后 5.77 MB），直接放进
-`plugins/voxcpm2/src/main/jniLibs/arm64-v8a/`。要重新生成它，见
-[`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxCPM2插件线.md)。
+验证签名：
 
-## 已知限制
+```bat
+apksigner verify --verbose --min-sdk-version 23 <apk>
+:: v1 / v2 / v3 三项都应为 true
+```
 
-- **只支持 arm64**：x86 平板装不上（`abiFilters` 就一个）
-- **不支持流式**：`req.streamAudio` 会被忽略，整段生成完一次性交回
-- **标准版只有魔搭一个下载源**：HF 没有这个仓库（见上面那张表）
-- **播放只有最近一份**：宿主保存的是「上一次合成的那份」，换文本再合成一次就把它顶掉了；
-  切到别的插件时「播放」也会变灰（文件属于上一个插件）。要留住音频点「保存」，
-  落到「音乐/Ponko」
-- **推理历史没有逐条的播放 / 保存**：宿主只有一个播放器、一个「保存」动作，
-  都只认"最近一次"。所以「结果」页的历史只记种子 / 参数 / 文本前 40 字，
-  且只存在于内存（关掉进程就没了）
-- **诊断信息不能默认收起**：宿主的 `GROUP_START` 没有"初始折叠"这个字段，
-  分组一律展开。运行时手动点一下标题就能收起
-- **长文本很慢**：字数没有硬性上限（插件不截断），但手机 RTF 10～30，40 字就是分钟级
-- **推理进度条是估计值**：原生侧只给"已生成多少秒"，不给总步数，总长按字数估
-  （中文约 4.5 字/秒），所以最后一段可能停在 90% 然后跳满
-- **取消不是瞬时的**：原生在音频回调里检查取消标志；若正卡在 LLM 预填充阶段，
-  可能要几秒才响应
-- **结果文件留在插件缓存**：`cache/synth/`，只保留最近 3 个。要长期留存，
-  点页面顶部功能区的「保存」
+## 发布
+
+改版本号 → 构建 → 签名 → 传 Release。三处必须对得上：tag 指向的提交、
+Release 附件、本地产物。附件名带版本（`Ponko-EX_VoxCPM2_0.9.0.apk`），
+别用固定的 `release.apk`，否则几个版本在下载记录里分不开。
 
 ## 许可
 
-- 插件代码、JNI、文档：[MIT](LICENSE) —— `Copyright (c) 2026 visitor257`
-- 推理引擎 `llama.cpp-omni` / `ggml`：**MIT**，版权归 ggml authors，
-  全文与归属见 [NOTICE.md](plugins/voxcpm2/NOTICE.md)
-- VoxCPM2 权重：**Apache-2.0**，由用户自行下载，随权重走，不受本仓库许可影响
+[MIT](LICENSE) —— 代码、文档、示例插件都在这个许可下。
 
-MIT 允许商用、修改、闭源分发，条件是**保留版权声明和许可全文**。
-所以这个插件把 `NOTICE.md` 一起打进了仓库，界面里也有一节写给用户看的许可说明。
-
-> 另外两条与开源协议无关、但同样要守的：
-> **声音权益**（《民法典》1023 条，自然人声音参照肖像权保护）——
-> 拿真人音频做克隆要先取得同意；
-> **深度合成标识**（《互联网信息服务深度合成管理规定》）——
-> 对外发布生成的音频时要可识别。
-> 自己录自己用、离线自己听，不涉及这些。
-
-## 目录
-
-```
-Ponko-EX/                           这条分支就是本项目
-├── README.md / README.en.md        本文件（中 / 英）
-├── LICENSE                         MIT
-├── doc/                            插件开发手册（快照，最新在 main 线）
-├── log/                            这条线踩过的坑
-├── tools/build.bat                 构建脚本（载入 MSVC 环境后就地编）
-└── plugins/voxcpm2/
-    ├── build.gradle.kts            包名 / minSdk / arm64 过滤
-    ├── NOTICE.md                   第三方许可与归属（分发前必读）
-    └── src/main/
-        ├── AndroidManifest.xml     只有服务与激活组件，**没有启动图标**
-        ├── jniLibs/arm64-v8a/      libvoxcpm2jni.so（预编译）
-        ├── res/                    图标 + 字符串
-        └── java/com/litertchat/plugin/voxcpm2/
-            ├── VoxCpm2Activator.kt      宿主「启用插件」时打开的那个页面
-            ├── VoxCpm2PluginService.kt  服务本体：加载、合成、设置界面、下载
-            ├── VoxCpm2Bridge.kt         JNI 声明（10 个 native 方法）
-            ├── ModelStore.kt            版本 × 镜像清单、断点续传、本地导入落盘
-            └── AudioUtil.kt             参考音频解码 → 16 kHz 单声道 WAV
+```text
+Copyright (c) 2026 visitor257
 ```
 
-`doc/` 和 `log/` 是**开发这个插件时**用得到的背景，不是插件运行的一部分。
+也就是说：你可以拿去用、改、商用、闭源分发，只要保留版权声明。
+**不提供任何担保** —— 插件跑在你的设备上、调你的模型，后果自负。
+
+> 宿主 Ponko 用的是同一条许可，但两个仓库各自独立：宿主的 `LICENSE`
+> 不覆盖这里的文件，反之亦然。
+
+**模型权重不在这个许可范围内。** 权重不随本仓库或 APK 分发，各自遵循其来源声明的许可：
+官方 VoxCPM2 权重是 Apache-2.0，精简 Q4 是第三方转换、其仓库未声明许可。
+商用前请自己确认。

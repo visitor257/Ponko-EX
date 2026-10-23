@@ -1,304 +1,202 @@
-# Ponko-EX · VoxCPM2
+# Ponko-EX
 
-A speech-synthesis plugin for [Ponko](https://github.com/visitor257/Ponko):
-[VoxCPM2](https://modelscope.cn/models/OpenBMB/VoxCPM2) (OpenBMB, 2B) running **offline** on the phone.
+Plugin project for Ponko. **A standalone project, separate from the host app** —
+it only depends on the plugin SDK AAR and touches none of the host's own code.
+
+- Host app (Ponko): <https://github.com/visitor257/Ponko>
+- Plugin developer's guide: [`doc/plugin-guide.en.md`](doc/plugin-guide.en.md)
 
 [中文](README.md)
 
-**A 4.6 MB plugin plus 2.8–3.6 GB of models (downloaded or imported on first run) — a TTS with no network.**
-No server, no API key, no telemetry. It works in airplane mode.
+## Plugins
 
-|  |  |
-|---|---|
-| Host | Ponko **2.0.0** or newer (the `LiteRT-Chat` main line) |
-| Platform | Android 9+ (minSdk 28) · **arm64-v8a only** |
-| Engine | llama.cpp-omni's `voxcpm2_runtime` plus a hand-written JNI (statically linked, 5.8 MB) |
-| Licence | Code MIT · VoxCPM2 weights Apache-2.0 (see [NOTICE.md](plugins/voxcpm2/NOTICE.md)) |
-
-## What it does
-
-- **30 languages and 9 Chinese dialects**, no language tag needed — the model works it out
-- **Voice design**: `(young woman, soft and sweet)Hello there` — describe a voice in
-  parentheses and get one that never existed
-- **Zero-shot cloning**: 5–10 seconds of clean audio is enough to copy a timbre
-- **Continuation cloning**: reference audio *plus* its transcript, reproducing pauses and
-  intonation as well
-- **48 kHz output**, straight out of the AudioVAE decoder, no extra upsampler
-
-## Install
-
-1. Install `Ponko-EX_VoxCPM2_release.apk`
-2. Open Ponko → **Plugins** → enable **VoxCPM2**
-3. On the **Models** tab: pick a version (standard Q8 3.55 GB / compact Q4 2.83 GB) and tap a
-   mirror to download (resumable, **use Wi-Fi**) — **or** import the two `.gguf` files from
-   local storage (one slot for the backbone, one for the acoustic model)
-4. Tap **Load model** (roughly 10–30 s); once the engine row reads *ready*, synthesise
-
-> Loading is **a tap you make yourself**. Since 2.0.0 the host no longer loads every
-> plugin's engine on connect — only lightweight plugins that declare `AUTOLOAD_ENGINE`
-> are loaded automatically. This one needs 3.5 GB, so it deliberately does not declare it.
-> Tapping **Synthesise** works too (it loads first, then synthesises), you just don't get a
-> load-progress view. Tap **Release model** whenever you want the memory back.
-
-> The action row is **one action per button**: `Load/Release model · Synthesise · Play ·
-> Stop · Save`. **Synthesise only runs inference and writes a file — it makes no sound**;
-> tap **Play** afterwards to hear it (the host's hint says so too). Play replays the last
-> file **without re-running inference** — five seconds of speech takes 1–2 minutes on a
-> phone, so don't reach for Synthesise just to hear the same line again.
->
-> The **Results** tab carries a **transport bar** (SDK v4 `UiType.AUDIO`). It drives the
-> **same player** as the Play button above it (the host's own), but you can see the time and
-> drag the position — the only way to get to one sentence in a one-to-two-minute clip.
->
-> The action row is drawn by the host and sits **above** the three tabs, because only the host
-> can start a synthesis: the audio has to travel back through its `ResultBundle` channel to
-> become playable and saveable. Anything the plugin pushed on its own would be dropped by the
-> request gate.
->
-> The plugin names those buttons (SDK v3 `buildActionLabels()`). The host's defaults are
-> *Load engine / Unload engine / Synthesise / Play / Stop / Save*; this plugin overrides two
-> of them — it loads a model, not an engine, and unloading leaves the file on disk (hence
-> "release"). Play / Stop / Save keep the host defaults.
-
-> **The host has to know v6.** This build is compiled against SDK v6 (three tabs + log pane +
-> transport bar + model slots), so it needs a host that carries the 2026-10-22 SDK batch.
-> Anything older splits two ways:
->
-> - v3 or earlier (the build that still rejected anything outside a version range): refuses
->   to bind — the gate rejects it before it can hand over a schema, so there is no fallback.
-> - v4/v5: connects and the page mostly works, but `MODEL_SLOT` (the two import rows) is
->   unknown, so it degrades into "unknown control" text blocks and **importing a local file
->   is not available** — download only. Update Ponko to use imports.
->
-> For the record, the direction is now one-way: since `181dcf5` the host only rejects
-> plugins **older** than its minimum. A plugin newer than the host connects normally and
-> its unknown controls degrade to a "label + value + update Ponko" text block — so the
-> "your plugin is too old" prompt no longer fires at a plugin that is already current.
-
-> **The signature must match the host.** Ponko protects plugin binding with a
-> `signature`-level permission, so a mismatched key makes `bindService` throw
-> `SecurityException` and the UI only says "binding failed".
-> This build is signed with Ponko's main-line `ponko-release.jks`; install it on a host
-> built from another line (e.g. `hw`) and you have to re-sign.
-
-## Using it
-
-### Host side: synthesis parameters
-
-Ponko 2.0.0's plugin page has a *synthesis parameters* block, and these values really do
-reach `SynthesisRequest`:
-
-| Parameter | Notes |
-|---|---|
-| Text | No hard character cap (the plugin never truncates). Phone RTF is 10–30, so 40 characters already means minutes |
-| Mode | plain / clone / continuation |
-| Reference audio | Picked from a file; the host opens it and passes an FD, the plugin decodes and resamples to 16 kHz |
-| Transcript | Required for continuation only |
-| Seed | `0` = random. Pin it to reproduce the same delivery |
-| Threads | auto (cores−1) / 2 / 4 / 6; takes effect on the next engine load |
-
-Pressing **Stop** mid-generation really interrupts: the plugin turns the host's cancel
-into `nativeCancel()`, and the native side checks it on every audio chunk — normally out
-within a few seconds, depending on which stage it is stuck in.
-
-### Plugin side: its own settings
-
-The host never sends `cfg` / `timesteps`; sensible ranges depend entirely on the model,
-so the plugin exposes them in its own UI:
-
-| Setting | Default | Range | Notes |
+| Plugin | What it does | Branch | Latest release |
 |---|---|---|---|
-| CFG guidance | 2.0 | 1.0–4.0 | Higher sticks closer to the text, lower is freer |
-| Diffusion steps | 10 | 4–24 | More is finer, and linearly slower |
-| Seed | empty (random) | integer | Pin it to reproduce a delivery; the Results tab shows the seed actually used |
-| Threads | empty (follow Ponko) | 1–8 | Takes effect on the **next** engine load |
-| Voice design description | empty | — | Equivalent to the host's `voiceDescription`; if both are empty no prefix is added |
+| VoxCPM2 Speech | Local text-to-speech, CPU-only inference on the phone | `Ponko-EX_VoxCPM2` | [0.9.0](https://github.com/visitor257/Ponko-EX/releases/tag/voxcpm2-0.9.0) |
+| Echo | Does nothing — verifies the plugin pipeline and doubles as a template | `Ponko-EX_test` | — |
 
-Seed and threads exist on both sides: **a value typed in the plugin page wins** over the
-host's; left empty, the host's applies.
+## Download and install
 
-The page is split into **three tabs** (SDK v5); being the outermost group, they can be
-swiped left and right. Switching is pure visibility, never a rebuild, so typed text and
-scroll position survive a switch, and the tab you were on is remembered:
+**Install the host first**: Ponko 2.0.0 or newer,
+<https://github.com/visitor257/Ponko/releases>. Plugins talk to the host over its
+plugin SDK; below 2.0.0 (plugin API 12) the host binds nothing.
 
-| Tab | Contents |
-|---|---|
-| Models | Model / engine / storage status, load and release, **local import** (two slots), download (version, per-file state, mirror buttons, progress, cancel, delete) |
-| Parameters | Voice design / CFG / steps / seed / threads, inference progress, last-run parameters, collapsible diagnostics, run log |
-| Results | Last run's seed / parameters / text / transport bar; inference history (this session only, at most 5 entries, metadata only) |
+**Then the plugin**: grab `Ponko-EX_VoxCPM2_0.9.0.apk` from
+[Releases](https://github.com/visitor257/Ponko-EX/releases) and install it like
+any other APK.
 
-**Target text, synthesis mode, reference audio and transcript are not on the plugin page** —
-they live in the host's *functional* block at the top. That block is the caller: those four
-describe *how this one call is dispatched*, and the plugin only receives the resulting
-`SynthesisRequest`. A text field in the plugin page that changed nothing would be worse than
-no field at all.
+Requirements and caveats:
 
-The tab you were on is remembered: a full repaint (load finished / synthesis started /
-synthesis finished) does not bounce you back to the first tab.
+- Android 9+ (minSdk 28), arm64, **8 GB of RAM recommended**
+- Release APKs are already signed with the **host's key** (v1 + v2 + v3). The host
+  guards plugin binding with a `protectionLevel="signature"` permission, so a
+  differently-signed plugin makes `bindService` throw `SecurityException` — see
+  "Signing" below if you build your own
+- **Model weights are not in the APK.** On first use, download a build in the
+  plugin's Model tab (Standard Q8 ~3.55 GB / Lite Q4 ~2.83 GB, resumable, three
+  mirrors), or import your own two GGUF files (BaseLM + Acoustic). Budget the file
+  size **plus** an in-memory copy of it
+- CPU-only inference: roughly 1–2 minutes for 5 seconds of speech
 
-The log is the host's `UiType.LOG` (SDK v4): fixed 160 dp tall, scrolling internally,
-long-press to copy, last 120 lines only. New lines arrive as **incremental patches**
-(`notifyUiPatch`) rather than a full page rebuild — so the log keeps its scroll position
-and the *voice design* textarea you are typing into keeps its focus and content.
-Scrolling back through history is safe too: new lines don't yank you to the bottom (the
-host only follows the tail when the pane was already there).
-Download and inference progress work the same way: they only touch their progress bar.
+After installing: Ponko → Plugins → VoxCPM2 → prepare weights in the Model tab →
+**Load model** → **Synthesize**.
 
-## The three modes
+Verifying:
 
-| Mode | Needs | Good for |
+```bat
+certutil -hashfile Ponko-EX_VoxCPM2_0.9.0.apk SHA256
+apksigner verify --verbose --min-sdk-version 23 Ponko-EX_VoxCPM2_0.9.0.apk
+```
+
+0.9.0 is sha256 `a44f55c8b2729990841f5f63e386e54c786648323e1e23338b8ff80c8b06a9c8`,
+4,699,635 bytes.
+
+## One line, one job
+
+This repo splits work by **branches**. Same working tree; `git checkout` moves you
+between them.
+
+| Branch | Contents | Purpose |
 |---|---|---|
-| Plain TTS (0) | text | General reading, the default |
-| Clone (1) | reference audio | A particular timbre, arbitrary content |
-| Continuation (2) | reference audio + transcript | Reproducing a performance: rhythm, pauses, tone |
+| `main` | This README, `doc/`, `log/`, plus the build skeleton. **No plugin modules.** | The main line. Docs and conventions live here |
+| `Ponko-EX_test` | Everything above + `plugins/echo` (the Echo test plugin) | The test line. Verifies the pipeline, doubles as a template |
+| `Ponko-EX_VoxCPM2` | Everything above + `plugins/voxcpm2` (VoxCPM2 speech) | The plugin line. Releases are cut from here |
 
-**Choosing reference audio**: 5–10 seconds, one speaker, no music, no reverb. wav / mp3 /
-m4a / flac all work (decoded through `MediaCodec`, then resampled to 16 kHz).
+```bash
+git checkout Ponko-EX_test     # go to the test line; switch here to build Echo
+git checkout main              # back to the main line, docs only
+```
 
-## Model files
+**Why plugin modules aren't on the main line**: the main line is for docs and
+conventions; each model family gets its own line (VoxCPM2 and friends). The test
+plugin is scaffolding. Once it has proven the pipeline and been copied as a
+template, it should step aside instead of occupying the main line forever.
 
-Not in the APK — 2.8–3.6 GB is not shippable. Two ways in:
+> ⚠ Running a build on `main` reports "no plugin modules". That is **expected**,
+> not a failure.
 
-**Local import** (SDK v6): the Models tab has two slots — backbone BaseLM and acoustic —
-each with its own *Import* button. The **host** opens the system file picker and forwards a
-read-only FD; the plugin copies the file into its own private directory
-(`files/imported/`). The picker cannot come from the plugin: it is a bound Service, has no
-`startActivityForResult`, and Android 10+ forbids it from starting activities in the
-background. **Imported files take priority over downloaded ones.**
+## Layout
 
-**Download**, into
-`Android/data/com.litertchat.plugin.voxcpm2/files/models/`:
+```
+Ponko-EX/
+├── README.md / README.en.md        this file (Chinese / English)
+├── doc/
+│   ├── plugin-guide.md             plugin developer's guide
+│   └── plugin-guide.en.md          same, in English
+├── log/
+│   ├── README.md                   what this folder is
+│   └── 2026-10-21-*.md             problems hit during development (Chinese, informal)
+├── settings.gradle.kts             local maven repo pointing at the plugin SDK
+├── build.gradle.kts                KGP version must match the host
+├── gradle.properties
+├── tools/build.bat                 pure ASCII; loads the MSVC env, then builds in place
+├── tools/push-via-api.py           push over the REST API when git push is blocked
+└── plugins/                        present only on the plugin lines
+    ├── echo/                       Ponko-EX_test
+    └── voxcpm2/                    Ponko-EX_VoxCPM2
+```
 
-| Version | BaseLM | Acoustic | Total | Notes |
-|---|---|---|---|---|
-| **Standard Q8** (default) | Q8_0 1.73 GB | F16 1.83 GB | **3.55 GB** | Repository declares `apache-2.0`; slightly better quality |
-| Compact Q4 | Q4_K_M 1.00 GB | F16 1.83 GB | **2.83 GB** | Third-party GGUF conversion, **no licence field**; **this is the set the standalone test build used** |
+## Where the docs are
 
-Mirrors are listed per version, and only combinations that actually exist:
-
-| Version | hf-mirror | HuggingFace | ModelScope |
-|---|---|---|---|
-| Compact Q4 | yes — `tc-mb/MiniCPM-V-Apps-gguf` | yes — same repo (usually unreachable from mainland China) | yes — `zerg13/MiniCPM-V-Apps-gguf` |
-| Standard Q8 | no | no | yes — `DennisHuang/VoxCPM2-GGUF` |
-
-The Q8_0 set has **no repository on HuggingFace** (hf-mirror 404s on that path, and it only
-proxies what really exists on HF), so the standard version is ModelScope-only. Showing a
-"Download from HuggingFace" button that 404s would be worse than not showing it.
-
-All of them use HTTP `Range`, so an interrupted download resumes from where it stopped.
-The default is the standard version not because it sounds much better, but because its
-provenance is unambiguous — if a distribution ever bundles the models, there is nothing
-extra to explain.
-
-`Acoustic` is the same file in both sets, but **`BaseLM` and `Acoustic` must come from the
-same release**; mixing them produces noise.
-
-## Performance
-
-| | |
+| I want to know | Read |
 |---|---|
-| RTF | Roughly **10–30** on a phone's CPU (a desktop 4090 gets 0.3) |
-| 5 s of speech | About **1–2 minutes** |
-| Memory | 3.55 GB of weights plus KV cache; **an 8 GB device is recommended** — available memory is checked before loading |
-| Disk | 4 GB (weights plus cache) |
+| How to write a plugin, what the interface looks like, how to supply UI config | [`doc/plugin-guide.en.md`](doc/plugin-guide.en.md) |
+| Why something is designed this way, which traps were hit | [`log/`](log/) (Chinese only) |
 
-A 6 GB device may not manage it. Rather than let the system OOM-kill the process, the load
-step reports "X GB available, Y GB needed".
+The guide tells you **how**. `log/` tells you **why**. If you followed the guide
+and it still doesn't work, read `log/` first — someone has probably hit it already.
+
+## Prerequisite: publish the plugin SDK
+
+Plugins depend on the `com.litertchat.ponko:plugin-sdk` AAR, which the **host**
+publishes into a local maven repo:
+
+```bat
+:: run inside the host's build sandbox
+tools\build-android.bat :ponko-plugin-sdk:publishReleasePublicationToLocalRepoRepository
+```
+
+The artifact lands in the local maven repo (path is in the
+`maven { url = ... }` block of `settings.gradle.kts`).
+
+> ⚠ **Any change to an AIDL file or a Parcelable requires republishing**, otherwise
+> plugins here are built against the old interface. The symptom is a runtime
+> `NoSuchMethodError` or mis-decoded Parcel values — nasty to trace.
+>
+> The reverse holds too: **rebuilding only the host is useless.** Plugins consume
+> the AAR in the local maven repo, not the host's source tree.
 
 ## Building
 
-The path is pure ASCII, so AGP accepts it and the build happens in place — no sandbox copy.
+The project path is pure ASCII, so AGP accepts it and the build runs **in place**
+— no need to sync into a sandbox first.
 
 ```bat
 tools\build.bat :plugins:voxcpm2:assembleRelease
 ```
 
-The output is unsigned:
+Output: `plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk`
 
-```
-plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk
-```
+`tools\build.bat` does three things, and the build fails without any of them:
 
-Sign it with the host's key (all three schemes v1 + v2 + v3 are enabled):
+1. Loads the MSVC environment (`vcvars64.bat`) — without it CMake can't find a build program
+2. Points at JDK 17 and the Android SDK
+3. Invokes gradle with `--no-daemon`
+
+**Don't use `gradlew`**: the wrapper's dists directory is empty on this machine;
+it just hangs or errors out.
+
+> ⚠ `.bat` files must stay **pure ASCII**. cmd.exe parses them with the OEM codepage
+> (GBK), so Chinese comments get mangled, break `if` blocks, and have historically
+> made a script re-run itself into a 22 MB log.
+
+## Signing (critical)
+
+The host protects plugin binding with a `protectionLevel="signature"` permission,
+so **a plugin must be signed with the same key** — otherwise `bindService` throws
+`SecurityException` outright.
+
+Use the host project's signing script (it pins v1 + v2 + v3 schemes on):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File <host>\tools\sign-apk.ps1 `
-  -Apk <unsigned.apk> -Out ...\Ponko-EX_VoxCPM2_release.apk
+  -Apk <unsigned.apk> -Out <signed.apk>
 ```
 
-**Don't use `gradlew`** — the wrapper's dists are empty on this machine.
-`tools\build.bat` loads the MSVC environment, points at JDK 17 and the Android SDK, and
-passes `--no-daemon`.
+Keys and passwords **never enter the repo**: `.gitignore` blocks `*.jks`,
+`*.keystore`, and `keystore.properties`. The script reads passwords from
+`keystore.properties` or environment variables.
 
-The native library is **not** built here. `libvoxcpm2jni.so` is a prebuilt artefact
-(NDK 27 + CMake, cross-compiled for arm64, statically linking `voxcpm2_runtime`, 5.77 MB
-after `llvm-strip`) dropped into `plugins/voxcpm2/src/main/jniLibs/arm64-v8a/`.
-To regenerate it, see [`log/2026-10-21-VoxCPM2插件线.md`](log/2026-10-21-VoxCPM2插件线.md) (Chinese).
+Verifying:
 
-## Known limitations
+```bat
+apksigner verify --verbose --min-sdk-version 23 <apk>
+:: v1 / v2 / v3 should all report true
+```
 
-- **arm64 only** — x86 tablets cannot install it (`abiFilters` has one entry)
-- **No streaming** — `req.streamAudio` is ignored; audio arrives in one piece at the end
-- **The standard version has one download source** — ModelScope only; HuggingFace has no
-  such repository (see the table above)
-- **Play keeps only the latest file** — the host stores "the last thing that was
-  synthesised", so synthesising again replaces it, and *Play* greys out for other plugins.
-  Tap *Save* for anything worth keeping (it lands in `Music/Ponko`)
-- **History entries cannot be played or saved individually** — the host keeps one player
-  and one *Save* action, both bound to "the latest run". So the Results tab's history holds
-  seed / parameters / the first 40 characters only, and only for this session
-- **Diagnostics cannot start collapsed** — the host's `GROUP_START` has no "initially
-  collapsed" field; groups always open
-- **The inference progress bar is an estimate** — the native side only reports how many
-  seconds of audio exist, not a total step count, so the total is estimated from character
-  count (about 4.5 characters per second of Chinese speech)
-- **Long text is slow** — there is no hard character cap (the plugin never truncates), but
-  phone RTF is 10–30, so 40 characters is already minutes
-- **Cancellation is not instantaneous** — the native side checks between audio chunks; if it
-  is stuck in LLM prefill, expect a few seconds
-- **Results stay in the plugin cache** — `cache/synth/`, only the last three are kept. Use
-  the host's *Save* action for anything you want to keep
+## Releasing
+
+Bump the version → build → sign → upload to a Release. Three things must agree:
+the commit the tag points at, the Release asset, and the local artifact. Put the
+version in the asset name (`Ponko-EX_VoxCPM2_0.9.0.apk`) — a fixed `release.apk`
+makes several versions indistinguishable in the download history.
 
 ## Licence
 
-- Plugin code, JNI, docs: [MIT](LICENSE) — `Copyright (c) 2026 visitor257`
-- Inference engine `llama.cpp-omni` / `ggml`: **MIT**, copyright the ggml authors; full text
-  and attribution in [NOTICE.md](plugins/voxcpm2/NOTICE.md)
-- VoxCPM2 weights: **Apache-2.0**, downloaded by the user, licensed with the weights and
-  unaffected by this repository's licence
+[MIT](LICENSE) — covers the code, the docs, and the sample plugins.
 
-MIT allows commercial use, modification and closed-source distribution, on condition that
-the copyright notice and permission text are retained. Hence `NOTICE.md` in the repo and a
-licence section shown to users inside the plugin.
-
-> Two more requirements that have nothing to do with open source but still apply:
-> **voice rights** (China's Civil Code art. 1023 treats a person's voice like a portrait) —
-> get consent before cloning a real person; and **deep-synthesis labelling** (the 2023
-> Provisions on the Administration of Deep Synthesis) — generated audio published publicly
-> must be identifiable. Recording yourself and listening offline involves neither.
-
-## Layout
-
-```
-Ponko-EX/                           this branch is the project
-├── README.md / README.en.md
-├── LICENSE                         MIT
-├── doc/                            plugin developer guide (snapshot; newest lives on main)
-├── log/                            problems hit on this line
-├── tools/build.bat                 build script (loads MSVC, builds in place)
-└── plugins/voxcpm2/
-    ├── build.gradle.kts            package name / minSdk / arm64 filter
-    ├── NOTICE.md                   third-party licences and attribution (read before shipping)
-    └── src/main/
-        ├── AndroidManifest.xml     service and activator only, **no launcher icon**
-        ├── jniLibs/arm64-v8a/      libvoxcpm2jni.so (prebuilt)
-        ├── res/                    icon and strings
-        └── java/com/litertchat/plugin/voxcpm2/
-            ├── VoxCpm2Activator.kt      the page the host opens to enable the plugin
-            ├── VoxCpm2PluginService.kt  the service: load, synthesise, settings UI, download
-            ├── VoxCpm2Bridge.kt         the ten native declarations
-            ├── ModelStore.kt            weight manifest and resumable download
-            └── AudioUtil.kt             reference audio → 16 kHz mono WAV
+```text
+Copyright (c) 2026 visitor257
 ```
 
-`doc/` and `log/` are background for developing this plugin, not part of it at run time.
+In short: use it, modify it, ship it commercially, keep it closed — just keep the
+copyright notice. There is **no warranty of any kind**; plugins run on your device
+and drive your models, so the consequences are yours.
+
+> The host app (Ponko) uses the same licence, but the two repositories are
+> independent: the host's `LICENSE` does not cover files here, and vice versa.
+
+**Model weights are not covered by this licence.** They ship neither in this repo
+nor in the APK, and each follows the licence its source declares: the official
+VoxCPM2 weights are Apache-2.0, while the Lite Q4 build is a third-party
+conversion whose repository declares no licence. Check before commercial use.
