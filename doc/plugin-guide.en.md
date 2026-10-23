@@ -380,6 +380,7 @@ class MyPluginService : PonkoPluginService() {
 | `requestEngineLoad()` | v12.2 | **Load the engine** (through the base-class state machine) |
 | `requestEngineClose()` | v12.2 | **Release the engine** (same) |
 | `pluginEngineState` | v12.2 | Current engine state, for drawing your own UI |
+| `hostLocaleTag` / `localizedContext()` | v12.5 | the host's current UI language (see §14) |
 
 The `callback` field is private — without these methods you cannot reach the
 callback at all and would have to hold the IBinder yourself.
@@ -1412,6 +1413,49 @@ what the host itself does.
 | Button labels | `buildActionLabels()` | ✅ |
 | About text | `res/raw/`, with qualifiers like `res/raw-zh/` | ✅ |
 | Error messages | `PluginError.message` | ⚠️ see below |
+
+### The host also tells you its language: `hostLocaleTag` (v12.5)
+
+**Most plugins do not need this** — the resource qualifiers above are enough. It
+covers the three cases resources cannot:
+
+| Case | Why resources fall short |
+|---|---|
+| Translations are not in resources (JSON in `assets/`, model config) | the resource system knows nothing about your file format |
+| Android 13+ per-app language is set | plugin resources still follow the **system**, so they drift from the host UI |
+| Behaviour must change with language, not just characters (voice choice, number formats, sample text) | that is not string substitution |
+
+The host supplies its current UI language on every bind, and the base class reads
+it into:
+
+```kotlin
+protected val hostLocaleTag: String        // "zh-CN" / "en" / "ru" …
+protected fun localizedContext(): Context  // Context with that locale applied
+```
+
+Two ways to use it — **prefer the first if you have resources**:
+
+```kotlin
+// ① resources still resolve against the host language, with normal fallback
+val label = localizedContext().getString(R.string.engine_label)
+
+// ② translations live in assets, pick yourself
+val lang = hostLocaleTag.substringBefore('-')
+val pack = when (lang) {
+    "zh" -> loadJson("zh")
+    "en" -> loadJson("en")
+    else -> loadJson("ru")     // ← your default, required
+}
+```
+
+> ⚠ The `else` branch *is* your default language. Without it a Portuguese user sees
+> blanks or a crash.
+>
+> ⚠ Do not copy `hostLocaleTag` into a field in `onCreate` — the host rebinds on a
+> language change and the value moves; a copy stops updating.
+
+When the host does not supply it (older host), it returns the **system default**
+language, never an empty string.
 
 ### Two traps
 

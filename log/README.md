@@ -34,6 +34,7 @@
 | [2026-10-23-插件拿不到引擎控制权.md](2026-10-23-插件拿不到引擎控制权.md) | `loadEngine`/`closeEngine`/`getStatus` 全在 private binder 里 → 插件只能直接调 `*Blocking`、状态机不动 → 宿主判 `NOT_READY` 重载并补发合成，**同一次合成跑两遍**；提取成 `doLoadEngine`/`doCloseEngine` + `requestEngineLoad`/`requestEngineClose`/`pluginEngineState`；`models` 必须缓存 |
 | [2026-10-23-启动提示与关于弹窗.md](2026-10-23-启动提示与关于弹窗.md) | 启动自动重连必然撞 stopped → 每次冷启动弹 toast（删掉，信息留在卡片）；卡片加「关于」= 插件写的 `ponko.about`（manifest，不走 AIDL，因为连不上时也要能看）；`android:resource` 的 meta-data 值是资源 id 不是文本；`setMessage` 复制不了 |
 | [2026-10-23-插件页接入i18n.md](2026-10-23-插件页接入i18n.md) | 插件侧多语言 = 普通资源限定符，`values/` 就是默认语言（只建 `values-xx/` 会崩）；宿主插件页是全 App 唯一没 i18n 的地方（~250 处硬编码）→ 抽成 671 条中英资源；拼接模板要重写成位置参数；撞 key 不报错只显示错 |
+| [2026-10-23-宿主语言传给插件与删耗时估算.md](2026-10-23-宿主语言传给插件与删耗时估算.md) | 宿主把界面语言放进 bind Intent extra → 基类暴露 `hostLocaleTag` / `localizedContext()`（AIDL 未动，老插件无感）；取 `configuration.locales[0]` 而非 `Locale.getDefault()`；删掉算不准的耗时估算（4.5 字/秒 是中文专属，跨语言必偏）|
 
 ## 一句话版（最容易忘的）
 
@@ -61,6 +62,9 @@
 - 文案要**用到时现算**：切语言会重建 Activity，`onCreate` 里缓存的不会变
 - **SDK 没有 `res/`**，所以 `PluginException` 的默认文案天生无法本地化，必须自己传
 - 批量替换中文 → 资源：注释行要排除；撞 key **不报错**，靠两份 key 集合比对兜住
+- **静态/单向/每次连接都重给**的信息 → Intent extra，不要 AIDL（不动接口、不重编插件）
+- 传语言取 `configuration.locales[0]`，不是 `Locale.getDefault()`；标签用 `toLanguageTag()`，别拼
+- **算不准的估算比没有更糟**：用户会拿它做判断，误差几倍就变成"看起来卡死了"
 - 需求里的硬约束（"不动 AIDL / 不发 AAR"）= 对方算过成本，别绕开它设计
 - `wakeLock.acquire(t)` 是一次性的，到点就掉；长任务必须续期
 - **别用下游性能约束限制上游输入**：40 字上限是按某个模型的 RTF 算的，

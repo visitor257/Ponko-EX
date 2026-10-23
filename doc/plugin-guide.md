@@ -364,6 +364,7 @@ class MyPluginService : PonkoPluginService() {
 | `requestEngineLoad()` | v12.2 | **加载引擎**（走基类状态机，见下节） |
 | `requestEngineClose()` | v12.2 | **释放引擎**（同上） |
 | `pluginEngineState` | v12.2 | 当前引擎状态，给自己画界面用 |
+| `hostLocaleTag` / `localizedContext()` | v12.5 | 宿主当前界面语言（见 §14） |
 
 `callback` 字段是 private 的 —— 没有这些方法你就调不到回调，只能自己存 IBinder。
 
@@ -1302,6 +1303,45 @@ Android 的资源查找是**逐级回落**的：
 | 按钮文案 | `buildActionLabels()` | ✅ |
 | 关于文档 | `res/raw/`，可用 `res/raw-zh/` 等限定符 | ✅ |
 | 错误文案 | `PluginError.message` | ⚠️ 见下 |
+
+### 宿主也会把语言告诉你：`hostLocaleTag`（v12.5）
+
+**大多数情况下你不需要它** —— 上面的资源限定符已经够了。它解决的是资源解决不了的三类问题：
+
+| 情况 | 为什么资源不够 |
+|---|---|
+| 译文不在资源里（放 `assets/` 的 JSON、模型配置） | 资源系统管不到你自己的文件格式 |
+| Android 13+ 给单个 App 设了语言 | 插件资源仍跟**系统**走，会和宿主界面对不上 |
+| 要按语言改行为而不只是换字（选音色、数字格式、示例文本） | 那不是字符串替换能表达的 |
+
+宿主每次绑定都会把当前界面语言带过来，基类读出来暴露成：
+
+```kotlin
+protected val hostLocaleTag: String        // "zh-CN" / "en" / "ru" …
+protected fun localizedContext(): Context  // 按它覆盖过 configuration 的 Context
+```
+
+两种用法 —— **有资源就用第一种**：
+
+```kotlin
+// ① 资源照样按宿主语言解析（含正常的多级回落）
+val label = localizedContext().getString(R.string.engine_label)
+
+// ② 译文在 assets 里，自己挑
+val lang = hostLocaleTag.substringBefore('-')
+val pack = when (lang) {
+    "zh" -> loadJson("zh")
+    "en" -> loadJson("en")
+    else -> loadJson("ru")     // ← 你的默认语言，必须有
+}
+```
+
+> ⚠ `else` 分支就是你的"默认语言"。缺了它，一个葡萄牙语用户会看到空白或崩溃。
+>
+> ⚠ 别在 `onCreate` 里把 `hostLocaleTag` 抄进字段当常量 —— 宿主换语言会重新绑定、
+> 值会变，抄一次之后就不再更新了。
+
+宿主没传时（老宿主）它返回**系统默认语言**，不会给你空串。
 
 ### 两个必须注意的坑
 
