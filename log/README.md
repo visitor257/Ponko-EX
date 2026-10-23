@@ -33,7 +33,7 @@
 | [2026-10-23-插件界面从固定到自由-v4到v12.1.md](2026-10-23-插件界面从固定到自由-v4到v12.1.md) | v4→v12.1：`ponko.actions`、开始停止同格、`HOST_SLOT` 分段、ROW/GRID、清掉六处写死行为；"重画跳回最顶"连续判错两次（`ScrollView.onLayout` 会 clamp `mScrollY`，pager 高度必须挪进 `onMeasure`）；日志追加的外层位置锁防的是空威胁 |
 | [2026-10-23-插件拿不到引擎控制权.md](2026-10-23-插件拿不到引擎控制权.md) | `loadEngine`/`closeEngine`/`getStatus` 全在 private binder 里 → 插件只能直接调 `*Blocking`、状态机不动 → 宿主判 `NOT_READY` 重载并补发合成，**同一次合成跑两遍**；提取成 `doLoadEngine`/`doCloseEngine` + `requestEngineLoad`/`requestEngineClose`/`pluginEngineState`；`models` 必须缓存 |
 | [2026-10-23-启动提示与关于弹窗.md](2026-10-23-启动提示与关于弹窗.md) | 启动自动重连必然撞 stopped → 每次冷启动弹 toast（删掉，信息留在卡片）；卡片加「关于」= 插件写的 `ponko.about`（manifest，不走 AIDL，因为连不上时也要能看）；`android:resource` 的 meta-data 值是资源 id 不是文本；`setMessage` 复制不了 |
-| [2026-10-23-插件页接入i18n.md](2026-10-23-插件页接入i18n.md) | 插件侧多语言 = 普通资源限定符，`values/` 就是默认语言（只建 `values-xx/` 会崩）；宿主插件页是全 App 唯一没 i18n 的地方（~250 处硬编码）→ 抽成 671 条中英资源；拼接模板要重写成位置参数；撞 key 不报错只显示错 |
+| [2026-10-23-插件页接入i18n.md](2026-10-23-插件页接入i18n.md) | 插件侧多语言 = 普通资源限定符，`values/` 就是默认语言（只建 `values-xx/` 会崩）；宿主插件页是全 App 唯一没 i18n 的地方（~250 处硬编码）→ 全部 UI 文案抽成中英资源（每条都双语）；拼接模板要重写成位置参数；撞 key 不报错只显示错 |
 | [2026-10-23-宿主语言传给插件与删耗时估算.md](2026-10-23-宿主语言传给插件与删耗时估算.md) | 宿主把界面语言放进 bind Intent extra → 基类暴露 `hostLocaleTag` / `localizedContext()`（AIDL 未动，老插件无感）；取 `configuration.locales[0]` 而非 `Locale.getDefault()`；删掉算不准的耗时估算（4.5 字/秒 是中文专属，跨语言必偏）|
 
 ## 一句话版（最容易忘的）
