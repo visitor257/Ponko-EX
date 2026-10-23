@@ -78,6 +78,17 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * 对同一份权重调两次 `nativeInit` —— 那是原生侧的未定义行为。
      */
     @Volatile private var engineLoading = false
+
+    /**
+     * 引擎那一行为什么不是"已就绪"。
+     *
+     * 加这个字段的理由很具体：加载失败时原因原本只写进 `dlNotice`（页面下方那行
+     * 「提示」），而用户的眼睛在顶部三行上 —— 他看到的是「引擎」那行闪一下
+     * 又变回"未加载"，看起来就是"点了没反应"。
+     *
+     * 失败原因必须出现在**他正在看的那一行**。非空时 `st_engine` 优先显示它。
+     */
+    @Volatile private var engineNote = ""
     @Volatile private var sampleRate = 48_000
     @Volatile private var loadedBytes = 0L
     @Volatile private var loadedSourceKey = ""
@@ -443,7 +454,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         displayName = "VoxCPM2 语音合成",
         // 和 plugins/voxcpm2/build.gradle.kts 的 versionName 保持一致。
         // 以前这里停在 "0.5.0" 没跟着动，插件卡片上显示的版本号是假的。
-        versionName = "0.7.3",
+        versionName = "0.7.4",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -455,7 +466,33 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
     // ======================================================== 引擎
 
-    override fun loadEngineBlocking(models: ModelBundle?, config: EngineConfig): EngineInfo {
+    override fun loadEngineBlocking(models: ModelBundle?, config: EngineConfig): EngineInfo =
+        try {
+            loadEngineInner(models, config)
+        } catch (t: Throwable) {
+            // 原因必须留在这里。基类只会把它交给宿主的 `onEngineError`（画在宿主
+            // 自己的功能区里），而用户盯着的是**插件页的「引擎」那行** ——
+            // 以前那儿只会闪一下又变回"未加载"，看着就是"点了没反应"。
+            engineNote = "加载失败：${briefReason(t)}"
+            logLine("加载失败：${t.message ?: t.javaClass.simpleName}")
+            throw t
+        }
+
+    /**
+     * 给状态行用的短原因。
+     *
+     * `PluginException.modelInvalid` 的 message 是给人看的一段话（"还没有可用的模型
+     * 文件。到「模型」页：从本地导入两份…"），塞进一行 STATUS 会被截成半句。
+     * 取第一句、再限长；完整原文仍然在「运行日志」里。
+     */
+    private fun briefReason(t: Throwable): String {
+        val raw = t.message?.trim().orEmpty().ifEmpty { t.javaClass.simpleName }
+        val head = raw.split('。', '；', ';', '\n').firstOrNull()?.trim().orEmpty()
+        val s = head.ifEmpty { raw }
+        return if (s.length <= 40) s else s.take(40) + "…"
+    }
+
+    private fun loadEngineInner(models: ModelBundle?, config: EngineConfig): EngineInfo {
         val t0 = SystemClock.elapsedRealtime()
         // 卸载后 600 ms 内又点了加载：把"正在释放"清掉，否则界面会一直显示它
         unloadingSince = 0L
@@ -522,6 +559,9 @@ class VoxCpm2PluginService : PonkoPluginService() {
         val threads = if (config.threads > 0) config.threads
         else (cores - 1).coerceIn(2, 6)
 
+        // 走到这一步才会真的读权重。日志里留一行，出问题时能区分
+        // "卡在 nativeInit 里"和"根本没走到这里"—— 两种在界面上都是转圈。
+        logLine("开始加载：${chosen.origin} · ${ModelStore.human(chosen.bytes)} · $threads 线程")
         val rc = VoxCpm2Bridge.nativeInit(
             chosen.baseLm.absolutePath,
             chosen.acoustic.absolutePath,
@@ -538,6 +578,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
         loadedSourceKey = chosen.origin
         loadedThreads = threads
         nativeReady = true
+        // 上一次的失败原因到此作废，否则"加载失败"会一直贴在已就绪的引擎上
+        engineNote = ""
 
         refreshDeviceStats()
         logLine(
@@ -936,8 +978,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
         items += UiItem(
             key = "st_engine", type = UiType.STATUS, label = "引擎",
             value = when {
-                engineUnloading -> "正在释放内存…"
+                // 失败原因优先级最高：它是"为什么按不动"，必须留在这一行上。
+                // 以前它只写进页面下方的「提示」，而用户的眼睛在顶部 ——
+                // 他看到的是这行闪一下又变回"未加载"，看起来就是"点了没反应"。
+                engineNote.isNotEmpty() -> engineNote
                 nativeReady -> "已就绪 · ${sampleRate / 1000} kHz · $loadedThreads 线程"
+                engineLoading -> "正在加载…"
+                engineUnloading -> "正在释放内存…"
                 readySet != null -> "未加载 · 点下面「加载模型」"
                 else -> "未加载 · 先导入或下载"
             },
@@ -957,8 +1004,8 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 只在**按不下去**时说原因。能按的时候不解释要花多久、占多少内存 ——
             // 那是第一次用才需要的知识，之后每天都看见就是噪音
             help = if (readySet == null) "先导入或下载模型文件" else "",
-            enabled = !nativeReady && readySet != null && !engineUnloading,
-            primary = !nativeReady && readySet != null,
+            enabled = !nativeReady && !engineLoading && readySet != null && !engineUnloading,
+            primary = !nativeReady && !engineLoading && readySet != null,
         )
         items += UiItem(
             key = "en_unload", type = UiType.ACTION, label = "释放模型",
@@ -1346,9 +1393,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 方法上，所以两条入口的状态是同一份（都读 nativeReady）。
             "en_load" -> loadFromUi()
             "en_unload" -> {
-                // `engineUnloading` 也要挡：v0.7.2 起这里不再靠重画把按钮灰掉，
-                // 释放的那几百毫秒里按钮看起来还能点 —— 连点两下会调两次 `nativeFree`
-                if (!nativeReady || engineUnloading) return
+                // `engineUnloading` 也要挡：连点两下会调两次 `nativeFree`，
+                // 中间那几百毫秒按钮看起来还能点
+                if (!nativeReady || engineUnloading) {
+                    logLine("引擎未加载，忽略这次「释放模型」")
+                    return
+                }
+                unloadingSince = SystemClock.elapsedRealtime()
+                engineNote = ""
                 logLine("用户点「释放模型」")
                 closeEngineBlocking()
             }
@@ -1392,18 +1444,27 @@ class VoxCpm2PluginService : PonkoPluginService() {
     /**
      * 「加载模型」按钮。
      *
-     * 为什么另开线程而不是用基类的 worker：基类那个 worker 是单线程的，
-     * 加载要 10~30 秒，期间同一队列里的「释放模型」「取消下载」全都排在后面 ——
-     * 用户点了没反应，只会更用力地点。
+     * 走 [loadEngineBlocking] 而不是自己调 nativeInit：内存预检、幂等、内存统计
+     * 刷新都在那边，复制一份迟早会分叉。
      *
-     * 走 [loadEngineBlocking] 而不是自己调 nativeInit：内存预检、幂等、
-     * 内存统计刷新都在那边，复制一份迟早会分叉。
+     * ## 为什么另开线程而不是用基类的 worker
+     *
+     * 基类那个 worker 是单线程的，加载要几十秒，期间同一队列里的「释放模型」
+     * 会被排在后面 —— 用户点了没反应，只会更用力地点。
+     *
+     * ## ⚠ 这条路绕过了基类的状态机
+     *
+     * 理想做法是调基类的 `loadEngine()`：它会把 `state` 推到 `LOADING`、
+     * 起前台服务、结束后推到 `READY` 并回调宿主。但它在 `private val binder`
+     * 里面，插件拿不到；`getStatus()` 也一样。结果是插件页说"已就绪"、
+     * 宿主功能区那行说"未加载"。已写进给宿主的报告，等 SDK 开口子。
      */
     private fun loadFromUi() {
-        // 挡住的两种情况都要**留一行日志**。以前是 `if (...) return` 静默丢弃，
-        // 用户点完什么都没发生、日志里也查不到为什么 —— 只能靠猜。
+        // 挡住的每种情况都要**留一行日志**。以前是静默 return，用户点完什么都
+        // 没发生、日志里也查不到为什么 —— 只能靠猜。
         if (nativeReady) {
             logLine("引擎已就绪，忽略这次「加载模型」")
+            notifySchemaChanged()
             return
         }
         if (engineLoading) {
@@ -1411,36 +1472,23 @@ class VoxCpm2PluginService : PonkoPluginService() {
             return
         }
         engineLoading = true
+        // 上一次的失败原因先清掉：留着会让"正在加载…"根本显示不出来
+        engineNote = ""
         logLine("用户点「加载模型」")
-        // ⚠ 这里**不重画整页**（v0.7.2）。
-        //
-        // 原来这一行是 `notifySchemaChanged()`，但它改不动任何东西：
-        // 此刻 `nativeReady` 还是 false，`en_load` / `en_unload` 的 enabled
-        // 与状态行的取值和上一帧**完全一样**，唯一要变的是日志（走 patch）
-        // 和一句"正在加载"。触发一次重画的代价是宿主把整页拆了重建，
-        // 外壳 ScrollView 的滚动位置会丢 —— 用户看到的就是"点一下跳回最顶"。
-        //
-        // 真有结构变化的是**加载完成**那一次（两个按钮的 enabled 要翻转），
-        // 那一次只能重画，躲不掉（宿主的 patch 改不了 ACTION）。
-        notifyUiPatch("st_engine", "正在加载…", append = false)
+        // 这一次重画必须做：按钮要灰掉、状态行要变"正在加载…"，
+        // 而 `patch` 改不了 ACTION 的 enabled（宿主 v11 起 patch 也只动文本）。
+        notifySchemaChanged()
         Thread({
-            // 成功时 `loadEngineBlocking` 自己已经喊过一次重画（按钮要翻转），
-            // 这里不要再补 —— 两次重画就是两次跳。
-            var renderedByLoad = false
             try {
-                // config 传空 threads：用自动估算（宿主参数区的线程数才是唯一入口）
                 loadEngineBlocking(null, EngineConfig())
-                // 走幂等早退时（native 已就绪，但上面那个标记还没同步）它也**不**喊，
-                // 所以不能用"没抛异常"当判据，要看 nativeReady 是不是真的翻过来了
-                renderedByLoad = nativeReady
             } catch (t: Throwable) {
+                // 原因已经由 `loadEngineBlocking` 的 catch 写进 `engineNote`
                 Log.w(TAG, "加载失败", t)
-                dlNotice = "加载失败：${t.message ?: t.javaClass.simpleName}"
-                logLine("加载失败：${t.message ?: t.javaClass.simpleName}")
             } finally {
+                // 成功也要重画：「加载模型」该变灰、「释放模型」该亮，
+                // 而 `engineLoading` 刚刚才翻成 false
                 engineLoading = false
-                // 失败 / 幂等早退：状态行必须回到真实值（"正在加载…"是 patch 上去的假象）
-                if (!renderedByLoad) notifySchemaChanged()
+                notifySchemaChanged()
             }
         }, "voxcpm2-load").apply { isDaemon = true; start() }
     }
