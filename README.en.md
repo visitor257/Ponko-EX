@@ -3,7 +3,53 @@
 Plugin project for Ponko. **A standalone project, separate from the host app** —
 it only depends on the plugin SDK AAR and touches none of the host's own code.
 
+- Host app (Ponko): <https://github.com/visitor257/Ponko>
+- Plugin developer's guide: [`doc/plugin-guide.en.md`](doc/plugin-guide.en.md)
+
 [中文](README.md)
+
+## Plugins
+
+| Plugin | What it does | Branch | Latest release |
+|---|---|---|---|
+| VoxCPM2 Speech | Local text-to-speech, CPU-only inference on the phone | `Ponko-EX_VoxCPM2` | [0.9.0](https://github.com/visitor257/Ponko-EX/releases/tag/voxcpm2-0.9.0) |
+| Echo | Does nothing — verifies the plugin pipeline and doubles as a template | `Ponko-EX_test` | — |
+
+## Download and install
+
+**Install the host first**: Ponko 2.0.0 or newer,
+<https://github.com/visitor257/Ponko/releases>. Plugins talk to the host over its
+plugin SDK; below 2.0.0 (plugin API 12) the host binds nothing.
+
+**Then the plugin**: grab `Ponko-EX_VoxCPM2_0.9.0.apk` from
+[Releases](https://github.com/visitor257/Ponko-EX/releases) and install it like
+any other APK.
+
+Requirements and caveats:
+
+- Android 9+ (minSdk 28), arm64, **8 GB of RAM recommended**
+- Release APKs are already signed with the **host's key** (v1 + v2 + v3). The host
+  guards plugin binding with a `protectionLevel="signature"` permission, so a
+  differently-signed plugin makes `bindService` throw `SecurityException` — see
+  "Signing" below if you build your own
+- **Model weights are not in the APK.** On first use, download a build in the
+  plugin's Model tab (Standard Q8 ~3.55 GB / Lite Q4 ~2.83 GB, resumable, three
+  mirrors), or import your own two GGUF files (BaseLM + Acoustic). Budget the file
+  size **plus** an in-memory copy of it
+- CPU-only inference: roughly 1–2 minutes for 5 seconds of speech
+
+After installing: Ponko → Plugins → VoxCPM2 → prepare weights in the Model tab →
+**Load model** → **Synthesize**.
+
+Verifying:
+
+```bat
+certutil -hashfile Ponko-EX_VoxCPM2_0.9.0.apk SHA256
+apksigner verify --verbose --min-sdk-version 23 Ponko-EX_VoxCPM2_0.9.0.apk
+```
+
+0.9.0 is sha256 `a44f55c8b2729990841f5f63e386e54c786648323e1e23338b8ff80c8b06a9c8`,
+4,699,635 bytes.
 
 ## One line, one job
 
@@ -14,16 +60,17 @@ between them.
 |---|---|---|
 | `main` | This README, `doc/`, `log/`, plus the build skeleton. **No plugin modules.** | The main line. Docs and conventions live here |
 | `Ponko-EX_test` | Everything above + `plugins/echo` (the Echo test plugin) | The test line. Verifies the pipeline, doubles as a template |
+| `Ponko-EX_VoxCPM2` | Everything above + `plugins/voxcpm2` (VoxCPM2 speech) | The plugin line. Releases are cut from here |
 
 ```bash
 git checkout Ponko-EX_test     # go to the test line; switch here to build Echo
 git checkout main              # back to the main line, docs only
 ```
 
-**Why the test plugin isn't on the main line**: the main line is reserved for
-plugins that actually ship — one branch per model family (VoxCPM2 and friends).
-The test plugin is scaffolding. Once it has proven the pipeline and been copied
-as a template, it should step aside instead of occupying the main line forever.
+**Why plugin modules aren't on the main line**: the main line is for docs and
+conventions; each model family gets its own line (VoxCPM2 and friends). The test
+plugin is scaffolding. Once it has proven the pipeline and been copied as a
+template, it should step aside instead of occupying the main line forever.
 
 > ⚠ Running a build on `main` reports "no plugin modules". That is **expected**,
 > not a failure.
@@ -44,8 +91,9 @@ Ponko-EX/
 ├── gradle.properties
 ├── tools/build.bat                 pure ASCII; loads the MSVC env, then builds in place
 ├── tools/push-via-api.py           push over the REST API when git push is blocked
-└── plugins/                        present only on the Ponko-EX_test branch
-    └── echo/
+└── plugins/                        present only on the plugin lines
+    ├── echo/                       Ponko-EX_test
+    └── voxcpm2/                    Ponko-EX_VoxCPM2
 ```
 
 ## Where the docs are
@@ -84,10 +132,10 @@ The project path is pure ASCII, so AGP accepts it and the build runs **in place*
 — no need to sync into a sandbox first.
 
 ```bat
-tools\build.bat :plugins:echo:assembleRelease
+tools\build.bat :plugins:voxcpm2:assembleRelease
 ```
 
-Output: `plugins\echo\build\outputs\apk\release\echo-release-unsigned.apk`
+Output: `plugins\voxcpm2\build\outputs\apk\release\voxcpm2-release-unsigned.apk`
 
 `tools\build.bat` does three things, and the build fails without any of them:
 
@@ -126,7 +174,14 @@ apksigner verify --verbose --min-sdk-version 23 <apk>
 :: v1 / v2 / v3 should all report true
 ```
 
-## License
+## Releasing
+
+Bump the version → build → sign → upload to a Release. Three things must agree:
+the commit the tag points at, the Release asset, and the local artifact. Put the
+version in the asset name (`Ponko-EX_VoxCPM2_0.9.0.apk`) — a fixed `release.apk`
+makes several versions indistinguishable in the download history.
+
+## Licence
 
 [MIT](LICENSE) — covers the code, the docs, and the sample plugins.
 
@@ -140,3 +195,8 @@ and drive your models, so the consequences are yours.
 
 > The host app (Ponko) uses the same licence, but the two repositories are
 > independent: the host's `LICENSE` does not cover files here, and vice versa.
+
+**Model weights are not covered by this licence.** They ship neither in this repo
+nor in the APK, and each follows the licence its source declares: the official
+VoxCPM2 weights are Apache-2.0, while the Lite Q4 build is a third-party
+conversion whose repository declares no licence. Check before commercial use.
