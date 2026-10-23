@@ -1357,13 +1357,104 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] Controls inside ROW / GRID still show their labels at half-screen width (nothing eaten by ellipses)
 - [ ] v10+ layout containers still read sensibly in the degenerate single-column case
 - [ ] Every id in `ponko.actions` is an action this plugin actually has (typos are dropped)
+- [ ] `values/` is present and holds your intended default language (a lone
+      `values-xx/` crashes on other languages)
+- [ ] All text is resolved on demand, not cached into fields in `onCreate`
+- [ ] `PluginException.notReady()` / `outOfMemory()` are given explicit messages
+      (the defaults are Chinese)
 - [ ] Disabling actually frees the plugin's model memory
 - [ ] If AIDL changed: SDK republished and plugin rebuilt
 - [ ] Identify builds by **sha256**, not byte size (adjacent builds can be byte-identical)
 
 ---
 
-## 14. Further reading
+## 14. Localisation: follow the system language, and `values/` is your default
+
+**No new interface is involved.** A plugin is its own process reading its own
+resources, and the host merely displays the strings you hand it — so "supporting
+multiple languages" is ordinary Android resource qualifiers.
+
+### The fallback chain is your "default language"
+
+Resource lookup steps down:
+
+```
+system language → use values-xx/ if present → otherwise fall back to values/ (no suffix)
+```
+
+So a "default language" needs no field at all — **it is whichever language you put
+in `values/`**.
+
+A plugin supporting Chinese and English, defaulting to Chinese: Chinese in
+`values/`, English in `values-en/`.
+
+| Device language | Resolves to | Shown |
+|---|---|---|
+| Chinese | no `values-zh` → fall back to `values/` | Chinese |
+| English | `values-en/` | English |
+| Russian | no `values-ru` → fall back to `values/` | Chinese (= your default) |
+
+For a **default of English**: English in `values/`, Chinese in `values-zh/`. That is
+what the host itself does.
+
+> ⚠ **`values/` must exist, and must hold a language you actually have.**
+> Shipping only `values-ru/` with no `values/` makes `getString()` throw
+> `Resources.NotFoundException` on a Chinese device and the plugin crashes.
+> A Russian-only plugin puts Russian in `values/`.
+
+### Where each piece of text comes from
+
+| Content | You provide it in | Localisable |
+|---|---|---|
+| Card title | your `values-xx/app_name` (system `loadLabel`) | ✅ |
+| `displayName` | `getString(R.string.x)` inside `createManifest()` | ✅ |
+| Page `label` / `help` | the strings in `UiSchema` | ✅ |
+| Button labels | `buildActionLabels()` | ✅ |
+| About text | `res/raw/`, with qualifiers like `res/raw-zh/` | ✅ |
+| Error messages | `PluginError.message` | ⚠️ see below |
+
+### Two traps
+
+**① Do not resolve strings in `onCreate` and keep them**
+
+```kotlin
+// ✗ stays in the old language after a switch
+private val title = getString(R.string.title)
+
+// ✓ resolve on every call
+override fun createManifest() = PluginManifest(displayName = getString(R.string.title), …)
+```
+
+The host **recreates its Activity when the system language changes**
+(`configChanges` does not include locale), so the connection is redone and
+`getSettingsSchema()` is called again. As long as your text is resolved on demand,
+the whole chain follows.
+
+**② `PluginException`'s default messages are Chinese, and cannot be changed**
+
+```kotlin
+// ✗ English users see a Chinese error
+throw PluginException.notReady()
+
+// ✓ pass your own
+throw PluginException.notReady(getString(R.string.err_not_ready))
+```
+
+The reason: those defaults live in the SDK, and **the SDK has no `res/` directory**,
+so they cannot be localised. Every factory with a default (`notReady` /
+`outOfMemory`) needs an explicit message.
+
+### Where the host stands
+
+The **host's own UI** follows the system language (English by default, Chinese in
+`values-zh/`). The plugin page joined it in v12.4 — before that it was entirely
+hardcoded Chinese, which produced mixed-language screens on English devices.
+
+**None of this changes your plugin**, but you may notice that on an English device
+the host-drawn buttons are English while your text is in whatever language your
+resources resolve to.
+
+## 15. Further reading
 
 - Design trade-offs and traps: [`../log/`](../log/) (Chinese only)
 - Interface definitions: `ponko-plugin-sdk/src/main/aidl/` in the host project
