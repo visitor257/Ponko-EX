@@ -880,7 +880,13 @@ UiItem("", UiType.ROW_END)
 | 滚到某一项 | `notifyScrollTo(key)` |
 | 图贴到哪个 `IMAGE` | `notifyImage(key, bitmap)` |
 | 日志滚到底 | 不用管：你在底部它才跟随，翻历史时不会把你拽回去 |
-| 重画后停在哪儿 | 不用管：位置由覆盖情况决定，宿主不写回旧值 |
+| 重画后停在哪儿 | 宿主 v12.1 起不用管（高度在测量阶段就定好，位置自然保住）；**v12.0 上会跳回最顶**，插件侧补不了 |
+
+> **v12.0 和 v12.1 的 `pluginApi` 都是 12，但重画行为不同。** v12.1 之前，标签页
+> pager 的高度是在 pre-draw 里设的 —— 重建那一帧内容变矮，`ScrollView.onLayout`
+> 末尾那句 `scrollTo(mScrollX, mScrollY)` 会按当前高度把位置 clamp 成 0，而 clamp
+> 只往下夹、不会长回来。所以**别把"重画后位置还在"当契约**，要停在哪就显式
+> `notifyScrollTo(key)`。
 
 **目标不明确时宿主一律丢弃并留日志，不猜。** 猜对是省你一个 key，
 猜错是"东西出现在不该出现的地方，而且看起来像是插件自己干的"——
@@ -1040,6 +1046,11 @@ const val API_MAX_SUPPORTED = 12            // 宿主接受的最新插件
 | v10 | `ROW` / `GRID` / `DIVIDER` / `SPACER` | **整页只剩纵向一列**，并排的会上下叠 |
 | v11 | `onImageWithKey` | 多图时只能贴第一张 |
 | v12 | `onScrollTo` | 位置由宿主默认行为决定，不能主动跳 |
+
+> **v12.1 不在上面这张表里**：它只改宿主内部（`ViewPager` 子类在 `onMeasure` 里
+> 遍历所有页取最高），`API_VERSION` 仍是 12。也就是说同一个 `pluginApi == 12`，
+> v12.0 重画会顶跳、v12.1 不跳 —— **版本号区分不了**。需要确定的位置时一律
+> `notifyScrollTo(key)`，别依赖默认。
 
 写兼容代码时判 `pluginApi >= API_WITH_xxx`，**不要**判 `== 最新版`。
 

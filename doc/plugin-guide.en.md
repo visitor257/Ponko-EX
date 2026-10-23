@@ -951,7 +951,15 @@ Otherwise the default is **do nothing**. So:
 | scroll to an item | `notifyScrollTo(key)` |
 | an image to land on a specific `IMAGE` | `notifyImage(key, bitmap)` |
 | the log to follow new output | nothing to do — it follows only if you were already at the bottom, and never drags you back mid-history |
-| the position after a repaint | nothing to do — it survives because heights no longer dip, not because the host writes an old value back |
+| the position after a repaint | nothing to do on v12.1+ — it survives because heights no longer dip, not because the host writes an old value back; **on v12.0 it jumps to the top and the plugin cannot fix it** |
+
+> **v12.0 and v12.1 both report `pluginApi == 12`, but they repaint differently.**
+> Before v12.1 the tab pager's height was set from a pre-draw listener, so on a rebuild
+> the content was briefly shorter; `ScrollView.onLayout` ends with
+> `scrollTo(mScrollX, mScrollY)`, which re-clamps against the current child height, and
+> clamp only shrinks — it never grows back. So **do not treat "the position survives a
+> repaint" as a contract**: if you need to land somewhere, say
+> `notifyScrollTo(key)`.
 
 **When the target is ambiguous the host drops it and logs, never guesses.** Guessing
 right saves you one key; guessing wrong puts something where it does not belong, in a
@@ -1118,6 +1126,13 @@ const val API_MAX_SUPPORTED = 12            // newest plugin the host accepts
 | v10 | `ROW` / `GRID` / `DIVIDER` / `SPACER` | **everything becomes one vertical column**; side-by-side items stack |
 | v11 | `onImageWithKey` | with several images, only the first gets filled |
 | v12 | `onScrollTo` | position follows host defaults; no active jumping |
+
+> **v12.1 is not in the table above on purpose**: it only changes host internals
+> (a `ViewPager` subclass measures every page in `onMeasure` and hands the max to
+> super), and `API_VERSION` stays at 12. So the same `pluginApi == 12` can jump to the
+> top on repaint (v12.0) or not (v12.1) — **the version number cannot tell them apart**.
+> When you need a definite position, always call `notifyScrollTo(key)` instead of
+> relying on the default.
 
 Gate compatibility checks on `pluginApi >= API_WITH_xxx`, **not** on `== latest`.
 
