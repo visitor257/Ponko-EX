@@ -77,6 +77,17 @@
             <meta-data
                 android:name="ponko.actions"
                 android:value="reasoning,stop" />
+
+            <!--
+              卡片上的「关于」（宿主 v12.3 起读，点开是个可复制的弹窗）。
+
+              写这三样就够，不用写功能列表 —— 那在卡片上已经列着了。
+              用户点「关于」通常只想弄明白两件事：这东西能不能商用、模型哪来的。
+              所以第一条就是"权重不在 APK 里、许可见模型本身"。
+            -->
+            <meta-data
+                android:name="ponko.about"
+                android:value="VoxCPM2 本地语音合成 · 需要 Ponko 2.0.0+（API 12）\n权重不随 APK 分发，需自行下载或导入，遵循模型本身的许可\n插件代码 MIT · github.com/visitor257/Ponko-EX" />
         </service>
     </application>
 

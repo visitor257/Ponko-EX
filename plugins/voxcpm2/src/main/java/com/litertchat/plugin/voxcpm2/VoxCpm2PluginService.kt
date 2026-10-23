@@ -12,6 +12,7 @@ import com.litertchat.plugin.ActionLabel
 import com.litertchat.plugin.Capability
 import com.litertchat.plugin.EngineConfig
 import com.litertchat.plugin.EngineInfo
+import com.litertchat.plugin.EngineState
 import com.litertchat.plugin.ErrCode
 import com.litertchat.plugin.ModelBundle
 import com.litertchat.plugin.PluginConst
@@ -71,13 +72,18 @@ class VoxCpm2PluginService : PonkoPluginService() {
             SystemClock.elapsedRealtime() - unloadingSince < UNLOAD_GRACE_MS
 
     /**
-     * 加载线程正在跑。
+     * 加载正在进行。
      *
-     * 以前没有这个标记：`loadFromUi` 在加载期间不改任何 schema 字段（`nativeReady`
-     * 还是 false），「加载模型」按钮看起来仍然可点，连点两下就会起两个加载线程、
-     * 对同一份权重调两次 `nativeInit` —— 那是原生侧的未定义行为。
+     * v0.8.0 起**不再自己维护**，直接读基类的 `pluginEngineState`（SDK v12.2 开的
+     * 出口）。以前这里是一个 `@Volatile var`，只有插件页那条加载线程会翻它 ——
+     * 宿主功能区发起的加载插件根本不知道，于是两个入口看到的是两种状态。
+     *
+     * 基类在 `doLoadEngine()` 里**同步**把 state 推到 `LOADING` 之后才派发 worker，
+     * 所以 `requestEngineLoad()` 一返回这个值就是对的，不会有"已经点了但还是 false"
+     * 的空窗。
      */
-    @Volatile private var engineLoading = false
+    private val engineLoading: Boolean
+        get() = pluginEngineState == EngineState.LOADING
 
     /**
      * 引擎那一行为什么不是"已就绪"。
@@ -454,7 +460,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         displayName = "VoxCPM2 语音合成",
         // 和 plugins/voxcpm2/build.gradle.kts 的 versionName 保持一致。
         // 以前这里停在 "0.5.0" 没跟着动，插件卡片上显示的版本号是假的。
-        versionName = "0.7.5",
+        versionName = "0.8.0",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -1392,13 +1398,15 @@ class VoxCpm2PluginService : PonkoPluginService() {
         when (key) {
             // ---- 模型页：加载 / 释放 ----
             //
-            // 这两行是"插件自己调自己"。宿主功能区的「加载模型 / 释放模型」
-            // 走的是 `loadEngine` / `closeEngine` 那条 AIDL，最终也落到这两个
-            // 方法上，所以两条入口的状态是同一份（都读 nativeReady）。
+            // v0.8.0 起两条都走**基类的正规入口**（`requestEngineLoad` /
+            // `requestEngineClose`，SDK v12.2 新增）。这不是"写法更漂亮"：
+            // 以前直接调 `*Blocking`，状态机留在 private binder 里不动，
+            // 宿主那行「引擎」永远"未加载"，而宿主判到 `NOT_READY` 之后
+            // 会自己再加载一遍、加载完**补发一次合成** —— 同一次合成跑两遍。
             "en_load" -> loadFromUi()
             "en_unload" -> {
-                // `engineUnloading` 也要挡：连点两下会调两次 `nativeFree`，
-                // 中间那几百毫秒按钮看起来还能点
+                // `engineUnloading` 也要挡：连点两下会在同一个 worker 上排两次
+                // close，中间那几百毫秒按钮看起来还能点
                 if (!nativeReady || engineUnloading) {
                     logLine("引擎未加载，忽略这次「释放模型」")
                     return
@@ -1406,7 +1414,13 @@ class VoxCpm2PluginService : PonkoPluginService() {
                 unloadingSince = SystemClock.elapsedRealtime()
                 engineNote = ""
                 logLine("用户点「释放模型」")
-                closeEngineBlocking()
+                if (!requestEngineClose()) {
+                    // 基类说本来就没加载（nativeReady 与 state 短暂对不上）：
+                    // 把「正在释放」撤掉，否则按钮要白灰 [UNLOAD_GRACE_MS]
+                    unloadingSince = 0L
+                    logLine("基类认为引擎本来就没加载，这次点击没有派发")
+                    notifySchemaChanged()
+                }
             }
 
             // ---- 下载：一个镜像一个按钮 ----
@@ -1448,20 +1462,27 @@ class VoxCpm2PluginService : PonkoPluginService() {
     /**
      * 「加载模型」按钮。
      *
-     * 走 [loadEngineBlocking] 而不是自己调 nativeInit：内存预检、幂等、内存统计
-     * 刷新都在那边，复制一份迟早会分叉。
+     * 走 [requestEngineLoad]（SDK v12.2）—— 它和宿主功能区的「加载模型」共用
+     * 基类里的同一份 `doLoadEngine()`：幂等、转 worker 线程、维护状态机、
+     * 调 `onEngineLoaded` / `onEngineError`、失败时撤前台服务，全都在里面。
      *
-     * ## 为什么另开线程而不是用基类的 worker
+     * ## 为什么不能直接调 `loadEngineBlocking`（v0.7.x 的错误做法）
      *
-     * 基类那个 worker 是单线程的，加载要几十秒，期间同一队列里的「释放模型」
-     * 会被排在后面 —— 用户点了没反应，只会更用力地点。
+     * 它是 `protected`，看起来"插件能调"，但只是**纯阻塞实现**。直接调它，
+     * `state` 永远停在 `UNLOADED`，于是宿主那行「引擎」一直"未加载"、前台服务
+     * 通知不出现，而且宿主判到 `NOT_READY` 会自己重载一遍再**补发一次合成** ——
+     * 用户等的那一两分钟里其实算了两份。
      *
-     * ## ⚠ 这条路绕过了基类的状态机
+     * ## 这里不再自己开线程
      *
-     * 理想做法是调基类的 `loadEngine()`：它会把 `state` 推到 `LOADING`、
-     * 起前台服务、结束后推到 `READY` 并回调宿主。但它在 `private val binder`
-     * 里面，插件拿不到；`getStatus()` 也一样。结果是插件页说"已就绪"、
-     * 宿主功能区那行说"未加载"。已写进给宿主的报告，等 SDK 开口子。
+     * `requestEngineLoad()` 只做派发、立刻返回，真正的 `loadEngineBlocking`
+     * 跑在基类的 worker 上。所以下面这一声重画必须**紧跟在它之后**：
+     * 那一刻 `state` 已经是 `LOADING`，按钮该灰、状态行该写"正在加载…"
+     * （而 `patch` 改不了 ACTION 的 enabled，只能整页重画）。
+     *
+     * 结束时的重画不在这里 —— 成功路径在 `loadEngineInner` 末尾、
+     * 失败路径在 `loadEngineBlocking` 的 catch 里，两条都覆盖到了，
+     * 而且宿主发起的加载也会经过它们。
      */
     private fun loadFromUi() {
         // 挡住的每种情况都要**留一行日志**。以前是静默 return，用户点完什么都
@@ -1475,26 +1496,16 @@ class VoxCpm2PluginService : PonkoPluginService() {
             logLine("上一次加载还在跑，忽略这次重复点击")
             return
         }
-        engineLoading = true
         // 上一次的失败原因先清掉：留着会让"正在加载…"根本显示不出来
         engineNote = ""
         logLine("用户点「加载模型」")
-        // 这一次重画必须做：按钮要灰掉、状态行要变"正在加载…"，
-        // 而 `patch` 改不了 ACTION 的 enabled（宿主 v11 起 patch 也只动文本）。
+
+        val started = requestEngineLoad()
+        if (!started) {
+            // false = 已加载 / 正在加载，什么都没做
+            logLine("基类判定引擎已在加载或已就绪，这次点击没有派发")
+        }
         notifySchemaChanged()
-        Thread({
-            try {
-                loadEngineBlocking(null, EngineConfig())
-            } catch (t: Throwable) {
-                // 原因已经由 `loadEngineBlocking` 的 catch 写进 `engineNote`
-                Log.w(TAG, "加载失败", t)
-            } finally {
-                // 成功也要重画：「加载模型」该变灰、「释放模型」该亮，
-                // 而 `engineLoading` 刚刚才翻成 false
-                engineLoading = false
-                notifySchemaChanged()
-            }
-        }, "voxcpm2-load").apply { isDaemon = true; start() }
     }
 
     // ======================================================== 本地导入（v6）
