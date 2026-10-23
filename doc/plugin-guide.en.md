@@ -153,6 +153,63 @@ include(":plugins:echo")          // add one line per module
 | 5 | `foregroundServiceType` + subtype property | Android 14+ refuses to start the foreground service |
 | 6 | `android:permission` | Anyone can bind — or, if you reverse it, you block yourself |
 
+### ⑦ Optional: show only some of the host's buttons (v9.1)
+
+By default the host draws all of 加载 / 合成 / 播放 / 停止 / 保存. If you only need a
+few of them, one line in `<service>` (or `<application>`) removes the rest:
+
+```xml
+<meta-data android:name="ponko.actions" android:value="reasoning,stop" />
+```
+
+| Value | Result |
+|---|---|
+| **absent** | everything is shown (existing plugins unaffected) |
+| `"reasoning,stop"` | only those two |
+| `""` (empty string) | none of them (the parameter area stays, so users can still type) |
+
+**No AIDL change, no SDK re-release — one manifest line is enough.**
+
+An id that does not exist (a typo, or an action this plugin never had) is dropped,
+with one line in logcat saying which. One misspelt word will not wipe out the row.
+
+> Why this exists: the only switch used to be `AUTOLOAD_ENGINE`, which does remove
+> 加载 — at the cost of loading gigabytes of weights the moment you connect. Binding
+> two unrelated concerns to one switch means neither works well.
+
+### ⑧ Optional: give the card an "About" entry (v12.3)
+
+Every card in the plugin page has an "About" button. It opens a plain-text dialog
+that can be selected and copied in one tap. The content comes from here:
+
+```xml
+<!-- one short line -->
+<meta-data android:name="ponko.about" android:value="VoxCPM2 local speech · MIT" />
+
+<!-- a longer document in res/raw/about.txt -->
+<meta-data android:name="ponko.about" android:resource="@raw/about" />
+```
+
+| Form | Use | Fits |
+|---|---|---|
+| `android:value` | inline string | a sentence or two |
+| `android:resource` | `res/raw/*.txt`, `res/raw/*.md` | multi-paragraph notes (model licence, changelog, credits) |
+
+Both `<service>` and `<application>` are read, **service first** (same as `ponko.actions`).
+
+**If you don't declare it, the dialog shows "无"** — that is not an error, just two
+characters. Existing plugins are unaffected.
+
+> What's worth writing: version requirements, where the model came from and its
+> licence, how to reach the author. People open "About" to answer "can I use this
+> commercially" and "where did this model come from", not to read a feature list
+> (the card already has one).
+
+> **Why a manifest entry and not AIDL**: the about text is static and versioned with
+> the APK. The bigger reason is that **it must be readable when the plugin cannot
+> connect**. The moment a card most needs "what is this" is exactly when the plugin
+> sits in stopped state or has failed to bind — over AIDL that would show "无" too.
+
 ### Item 6 is easy to get backwards
 
 `android:permission` on a `<service>` constrains the **caller**, not the plugin.
@@ -203,7 +260,7 @@ remedy after a force-stop or when a particular ROM blocks automatic activation.
 
 ---
 
-## 5. AIDL quick reference (API v2)
+## 5. AIDL quick reference (API v12)
 
 ### Host → plugin
 
@@ -221,8 +278,10 @@ remedy after a force-stop or when a particular ROM blocks automatic activation.
 | `getSettingsSchema()` | sync | Returns the form; **must be fast**, no I/O |
 | `setSetting(key, value)` | oneway | User changed a field |
 | `invokeAction(key)` | oneway | User tapped an `ACTION` item |
+| `getActionLabels()` | sync | v3: button label overrides, see §9 |
+| `deleteModel(role)` | oneway | v6: user wants a model slot's file deleted |
 
-> Only three and a half methods are synchronous (version, ready, status, form).
+> Only five methods are synchronous (version, ready, status, form, action labels).
 > They run on the **host's Binder thread**. Locking or waiting on a worker occupies
 > one of the host's 16 Binder threads, and every other IPC queues behind it.
 > So implementations read cached fields only.
@@ -238,6 +297,13 @@ remedy after a force-stop or when a particular ROM blocks automatic activation.
 | `onResult(bundle)` | Final result, **exactly once** |
 | `onError(err)` | Error, **exactly once**; cancellation also comes through here |
 | `onSchemaChanged()` | Form data changed — please repaint |
+| `onUiPatch(key, value, append)` | v4: update one control in place (log / progress / status) |
+| `onImage(fd, w, h, mime)` | v4: deliver a result image |
+| `requestSynthesis()` | v7: ask the host to start a synthesis (user tapped a button in your form) |
+| `onAudioFile(key, fd, name)` | v7: audio for one specific history entry |
+| `selectTab(groupKey, tabKey)` | v8: ask the host to switch to a page |
+| `onImageWithKey(key, fd, …)` | v11: deliver an image to a named `IMAGE` control |
+| `onScrollTo(key)` | v12: ask the host to scroll to an item |
 
 **`oneway` has no backpressure.** A fast producer and a slow consumer queue up on
 the host side; in the extreme this exhausts the 1 MB Binder budget and drags down
@@ -298,6 +364,26 @@ class MyPluginService : PonkoPluginService() {
 ```
 
 `createManifest()` is called on a Binder thread — **keep it cheap and pure**.
+
+### What the base class exposes
+
+| Method | Version | Purpose |
+|---|---|---|
+| `notifySchemaChanged()` | v2 | Form data changed — repaint |
+| `notifyUiPatch(key, value, append)` | v4 | Update one control in place, **no full repaint** |
+| `notifyImage(fd, w, h, mime)` / `notifyImage(file, …)` | v4 | Deliver an image (key optional when there is exactly one `IMAGE`) |
+| `notifyImage(key, bitmap)` / `notifyImage(key, file)` | v11 | Deliver an image to a named `IMAGE` (required when there are several) |
+| `notifyRequestSynthesis()` | v7 | Ask the host to synthesise using the form's current values |
+| `notifyAudioFile(key, fd, name)` | v7 | Audio for one history entry |
+| `notifySelectTab(groupKey, tabKey)` | v8 | Ask the host to switch pages |
+| `notifyScrollTo(key)` | v12 | Ask the host to scroll to an item |
+| `requestEngineLoad()` | v12.2 | **Load the engine** (through the base-class state machine) |
+| `requestEngineClose()` | v12.2 | **Release the engine** (same) |
+| `pluginEngineState` | v12.2 | Current engine state, for drawing your own UI |
+| `hostLocaleTag` / `localizedContext()` | v12.5 | the host's current UI language (see §14) |
+
+The `callback` field is private — without these methods you cannot reach the
+callback at all and would have to hold the IBinder yourself.
 
 ### Capabilities describe a promise, not a behaviour
 
@@ -594,6 +680,75 @@ The plugin page has a collapsible "diagnostics" section at the bottom showing
 This is far more useful than logcat alone: ordinary users can't run adb, but they
 can take a screenshot.
 
+### The reverse direction: make the host start a synthesis (v7)
+
+Normally the host sends `synthesize` to you. The reverse case: you put a
+「开始推理」button in your own form (`invokeAction`) and want the synthesis to go
+through **the host's path** — because the host already handles parameters,
+the reference-audio FD, progress display and button state.
+
+```kotlin
+override fun onActionInvoked(key: String) {
+    if (key == "start") notifyRequestSynthesis()
+}
+```
+
+It is equivalent to the user tapping the host's own 合成 button: **the same path**,
+so validation, reference audio, progress and cancellation all behave identically.
+There is no second synthesis path, and therefore no second set of bugs.
+
+The difference from `synthesize`: that one is the host telling you to work; this one
+is you asking the host to give the order. Either way it lands in your
+`synthesizeBlocking`.
+
+### Loading / releasing the engine from your own button (v12.2)
+
+**This is the easiest trap to fall into, and the symptom is alarming.**
+
+`loadEngineBlocking()` is `protected`, so it looks callable. But it is only the
+**blocking implementation** — the state machine, the foreground service and the
+callbacks all live elsewhere. Call it directly and:
+
+| What you see | Why |
+|---|---|
+| The host's「引擎」line always says "not loaded" | the base class `state` is still `UNLOADED` |
+| You tap synthesize, wait 1–2 minutes, and get **two results** | the host sees `NOT_READY`, loads the engine itself, then **re-sends the synthesis** |
+| No foreground-service notification | no `onEngineLoaded`, so the notification never sits in "loading" |
+
+The cause is simple: `loadEngine` / `closeEngine` / `getStatus` / `isEngineReady`
+are all inside the binder, and the binder is private — **a plugin cannot reach any
+of them**. That was a genuine SDK gap.
+
+```kotlin
+override fun onActionInvoked(key: String) {
+    when (key) {
+        "load"  -> requestEngineLoad()      // not loadEngineBlocking
+        "close" -> requestEngineClose()     // not closeEngineBlocking
+    }
+}
+
+// drawing your own status label
+val loaded = pluginEngineState == EngineState.READY ||
+             pluginEngineState == EngineState.RUNNING
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `requestEngineLoad(models = null, config = null)` | `true` = actually started | idempotent: `false` if already loaded or loading, and nothing happens |
+| `requestEngineClose()` | `true` = actually started | `false` if it was not loaded |
+| `pluginEngineState` | `EngineState.*` | `UNLOADED` / `LOADING` / `READY` / `RUNNING`, O(1) |
+
+**Omitting `models` is fine** — the base class caches the `ModelBundle` and
+`EngineConfig` the host supplied last time and reuses them. So a plugin-initiated
+load will not lose the user's imported model.
+
+`closeEngineBlocking()` is the same story: calling it only frees memory while
+`state` stays `READY`, so the host believes the engine is still there and keeps
+sending synthesis requests.
+
+> Use the `*Blocking` variants directly only when you deliberately want to bypass
+> the state machine (unit tests, for instance). Normal flows go through `request*`.
+
 ### Streaming (optional)
 
 When `req.streamAudio == true`, push with `out.chunk(pcm, rate, ch, isFinal)` while
@@ -646,26 +801,255 @@ tables are not parsed; the symbols appear on screen. `label` / `help` / `value` 
 >
 > Write your copy assuming bold and code are all you get — don't count on lists or headings.
 
-### The 12 widget types
+### The 26 widget types
 
-| Type | Purpose | Key fields |
+Read them in three groups: **settings** (the user edits them, delivered through
+`onSettingChanged`), **process and output** (display only, fed by `notifyUiPatch`
+or `notifyImage`), and **layout** (no control of their own, they only rearrange).
+
+#### ① Settings (v1–v2, 12 types)
+
+| Type | No. | Purpose | Key fields |
+|---|---|---|---|
+| `INFO` | 0 | paragraph of text | `label` = body |
+| `SECTION` | 1 | section heading (not collapsible) | `label` |
+| `SWITCH` | 2 | toggle | `value` = `"true"` / `"false"` |
+| `SLIDER` | 3 | numeric slider | `min` / `max` / `step` / `value` |
+| `CHOICE` | 4 | single choice | `options` + `value` |
+| `TEXT` | 5 | single-line input | `value` |
+| `ACTION` | 6 | button | `key` (routed to `invokeAction`); `value` can name a host action, see below |
+| `PROGRESS` | 7 | **read-only** progress bar | filled by the host; `value` is only the initial one |
+| `STATUS` | 8 | **read-only** key → value row | `label` / `value` |
+| `TEXTAREA` | 9 | multi-line input | `value` |
+| `GROUP_START` | 10 | collapsible group start | `label` = title, `key` remembers state |
+| `GROUP_END` | 11 | group end | — |
+
+#### ② Process and output (v4 onward, 3 types)
+
+| Type | No. | Purpose | Fed by |
+|---|---|---|---|
+| `LOG` | 12 | log pane (monospace, long-press to copy) | `notifyUiPatch(key, text, append = true)` |
+| `IMAGE` | 13 | result image | `notifyImage(...)` |
+| `AUDIO` | 14 | playback bar (play / seek / time / save) | `notifyAudioFile(key, fd, name)` |
+
+These three **do not participate in `setSetting`** — the user cannot edit them, and
+`patch` only understands the first (images go through `notifyImage`, `AUDIO` is the
+host's player).
+
+#### ③ Layout (v5 onward, 11 types)
+
+| Type | No. | Notes |
 |---|---|---|
-| `INFO` | paragraph of text | `label` = body |
-| `SECTION` | section heading (not collapsible) | `label` |
-| `SWITCH` | toggle | `value` = `"true"` / `"false"` |
-| `SLIDER` | numeric slider | `min` / `max` / `step` / `value` |
-| `CHOICE` | single choice | `options` + `value` |
-| `TEXT` | single-line input | `value` |
-| `ACTION` | button | `key` (routed to `invokeAction`) |
-| `PROGRESS` | **read-only** progress bar | `value` = 0–100 as a string |
-| `STATUS` | **read-only** key → value row | `label` / `value` |
-| `TEXTAREA` | multi-line input | `value` |
-| `GROUP_START` | collapsible group start | `label` = title, `key` remembers state |
-| `GROUP_END` | group end | — |
+| `TABS_START` | 15 | tab group start. `key` remembers "which page you were on" |
+| `TAB` | 16 | page start. `key` is what `notifySelectTab` refers to |
+| `TABS_END` | 17 | tab group end |
+| `MODEL_SLOT` | 18 | model file slot, `value` = `ROLE_*` |
+| `HOST_SLOT` | 19 | mount point for the host's function block; `value` can pick a segment |
+| `ROW_START` / `ROW_END` | 20 / 21 | one horizontal row; `value` sets width shares |
+| `GRID_START` / `GRID_END` | 22 / 23 | equal-width grid; `value` = column count |
+| `DIVIDER` | 24 | a rule (turns vertical inside a ROW) |
+| `SPACER` | 25 | empty space (height in a column; weight in ROW/GRID) |
 
-`UiType.MAX_KNOWN = 11` is the highest number the host understands. Use anything
+`UiType.MAX_KNOWN = 25` is the highest number the host understands. Use anything
 higher and the host degrades it to plain text (no crash, but the widget is gone).
 **The set is fixed on the host side; plugins can't introduce new types.**
+
+### Tabs (v5 onward)
+
+```kotlin
+UiItem("t", UiType.TABS_START, value = "param")   // value = key of the default page
+UiItem("p", UiType.TAB, label = "参数")
+UiItem("txt", UiType.TEXTAREA, label = "要合成的内容")
+UiItem("r", UiType.TAB, label = "结果")
+UiItem("cmp", UiType.AUDIO, label = "合成结果")
+UiItem("", UiType.TABS_END)
+```
+
+| Rule | Notes |
+|---|---|
+| Everything after a `TAB` belongs to that page until the next `TAB` or `TABS_END` | order semantics, not "grouping" |
+| `TABS_START.value` is the page selected by default | once the user switches, the host remembers **their** choice |
+| The outermost group is swipeable; nested ones are not | a nested pager's horizontal gesture fights the page's vertical scroll |
+| Nesting is allowed (pages inside pages) | unlimited depth, but more than two is painful on a phone |
+
+To switch pages yourself use `notifySelectTab(groupKey, tabKey)` (v8) —
+**the host will not do it for you**.
+
+### Model slots (v6 onward)
+
+When the plugin needs the user to pick a model file, use this instead of writing
+your own file picker:
+
+```kotlin
+UiItem("m", UiType.MODEL_SLOT, label = "主模型", value = PluginConst.ROLE_MAIN)
+```
+
+The host handles the picker, copies the file into **your private directory**,
+reports the path, shows name and size, and offers delete. You just take the
+ready-made `File` from the `models` argument.
+
+`value` uses `ROLE_MAIN` / `ROLE_BASE_LM` / `ROLE_ACOUSTIC` / `ROLE_MMPROJ` /
+`ROLE_VAE` / `ROLE_TOKENIZER` — these are **slot identities**, one file per role.
+A custom string also works; the host simply doesn't know its semantics.
+
+### The host function block: `HOST_SLOT` (v7; segmented since v9.1)
+
+The 加载 / 合成 / 播放 / 停止 / 保存 row is pinned under the title by default.
+One `HOST_SLOT` moves it wherever you want:
+
+```kotlin
+UiItem("", UiType.HOST_SLOT)     // move the whole block
+```
+
+Moved whole, the internal order is fixed: **title → button row → parameters →
+diagnostics**. To arrange it yourself, move it by segment:
+
+| `value` | What moves |
+|---|---|
+| `"actions"` | the 功能 heading, button row, action help, status line ("正在合成…") |
+| `"params"` | the host's parameter area (target text / mode / reference audio / transcript / seed / threads) |
+| `"diag"` | diagnostics (collapsed by default) |
+| empty | the whole block (default) |
+
+```kotlin
+UiItem("txt", UiType.TEXTAREA, label = "要合成的内容")
+UiItem("", UiType.HOST_SLOT, value = "actions")     // the start button, under the text
+UiItem("log", UiType.LOG, label = "进度")            // progress, under the button
+```
+
+| Rule | Notes |
+|---|---|
+| Each segment honours only its **first** slot | a second `actions` slot is empty |
+| Segments you do **not** claim go back to the top | if you only claim `actions`, the parameter area stays under the title (otherwise you'd have nowhere to type) |
+| Whole-block and segmented are **mutually exclusive** within a frame | mixing them makes the whole-block slots return null |
+| A misspelt segment name | treated as whole-block, plus one logcat warning |
+| All three claimed | the top reserves nothing (no empty card left behind) |
+
+**Why the plugin can't just redraw the whole block**: behind those buttons is the
+host's state machine (how far the engine has loaded, whether a synthesis is running,
+the reference-audio FD, saving to the music library). Redrawing means copying all of
+that over, and two copies inevitably disagree. This only changes the **mount point**;
+the logic still exists once.
+
+### Naming a host action: `ACTION`'s `value` (v9 onward)
+
+Normally `ACTION` is your button (taps go to `invokeAction`). If `value` is one of
+the host action ids, it becomes **that host button**, drawn where you put it:
+
+```kotlin
+UiItem("start", UiType.ACTION, value = HostActionId.REASONING)
+```
+
+| `HostActionId` | Host action |
+|---|---|
+| `ENGINE` | load / unload the engine (one button, two states) |
+| `REASONING` | synthesise (produces a file, does not play) |
+| `PLAY` | replay the last artefact |
+| `STOP` | stop (a real interruption) |
+| `SAVE` | copy into the system「音乐/Ponko」 |
+
+A named button **disappears from the top row** (never drawn twice); its label is
+still overridable through `ActionLabel`.
+
+> This is "relocation", not "creation": you cannot make the host offer an extra
+> action, only decide where an existing one is drawn.
+
+### Laying things out yourself (v10 onward)
+
+Since v2, `items` had been a **flat vertical list** — two sliders side by side was
+impossible. v10 adds containers:
+
+```kotlin
+// two sliders on one row, half each
+UiItem("", UiType.ROW_START)
+UiItem("speed", UiType.SLIDER, label = "语速", …)
+UiItem("pitch", UiType.SLIDER, label = "音高", …)
+UiItem("", UiType.ROW_END)
+
+// 1:2 width
+UiItem("", UiType.ROW_START, value = "1,2")
+
+// three-column button matrix; the fourth wraps
+UiItem("", UiType.GRID_START, value = "3")
+UiItem("v1", UiType.ACTION, label = "音色 A")
+UiItem("v2", UiType.ACTION, label = "音色 B")
+UiItem("v3", UiType.ACTION, label = "音色 C")
+UiItem("v4", UiType.ACTION, label = "音色 D")
+UiItem("", UiType.GRID_END)
+```
+
+| Container | `value` |
+|---|---|
+| `ROW_START` | empty = equal shares; `"1,2"` = by share. Missing shares default to 1; `0` or negative is treated as 1 |
+| `GRID_START` | 2–4 columns; empty or invalid = 2. **Every column is equal width**; capped at 4 (beyond that, labels get eaten by ellipses) |
+
+Same stack syntax as `GROUP_START` / `TABS_START`, and **nesting is free**: ROW
+inside GROUP, GROUP inside ROW, GRID inside TABS all work.
+
+| Fine inside ROW/GRID | Poor (works, but very narrow) |
+|---|---|
+| `SLIDER` `TEXT` `SWITCH` `ACTION` `CHOICE` `STATUS` `INFO` | `TEXTAREA` `LOG` `IMAGE` `TABS_START` |
+
+When the last grid row is not full it **does not reserve space** — a single item in
+a 3-column grid still occupies one third, with blank space to the right, rather than
+stretching across the row.
+
+**`SPACER` is the piece that completes `ROW`**: without it a row can only divide
+evenly, and "one group left, one group right" is impossible.
+
+```kotlin
+UiItem("", UiType.ROW_START, value = "1,2,1")
+UiItem("save", UiType.ACTION, label = "保存")
+UiItem("", UiType.SPACER)            // takes the middle 2 shares, pushing the sides apart
+UiItem("load", UiType.ACTION, label = "加载")
+UiItem("", UiType.ROW_END)
+```
+
+### Styling is not yours
+
+| Yours | The host's |
+|---|---|
+| which controls exist | colours (all from the host theme) |
+| order, grouping, tabs | type size, line height |
+| horizontal / grid / arbitrary nesting | corner radius, padding |
+| width share of each item | dark-mode adaptation |
+
+**Total freedom over structure, none over styling.** Not out of caution: a plugin
+cannot read the host's theme object, so any colour it hard-codes becomes a second
+palette that stays behind when the user switches themes.
+
+### The host will not decide for you
+
+This matters more than any individual control. The host's behaviour on your form has
+exactly two categories:
+
+1. **The control's own semantics** — dragging a slider, toggling a switch,
+   highlighting a choice, folding a group
+2. **The host's own business** — the playback bar reflecting the player, when an
+   action button is enabled
+
+Otherwise the default is **do nothing**. So:
+
+| You want | You say so |
+|---|---|
+| switch to a page | `notifySelectTab(groupKey, tabKey)` |
+| scroll to an item | `notifyScrollTo(key)` |
+| an image to land on a specific `IMAGE` | `notifyImage(key, bitmap)` |
+| the log to follow new output | nothing to do — it follows only if you were already at the bottom, and never drags you back mid-history |
+| the position after a repaint | nothing to do on v12.1+ — it survives because heights no longer dip, not because the host writes an old value back; **on v12.0 it jumps to the top and the plugin cannot fix it** |
+
+> **v12.0 and v12.1 both report `pluginApi == 12`, but they repaint differently.**
+> Before v12.1 the tab pager's height was set from a pre-draw listener, so on a rebuild
+> the content was briefly shorter; `ScrollView.onLayout` ends with
+> `scrollTo(mScrollX, mScrollY)`, which re-clamps against the current child height, and
+> clamp only shrinks — it never grows back. So **do not treat "the position survives a
+> repaint" as a contract**: if you need to land somewhere, say
+> `notifyScrollTo(key)`.
+
+**When the target is ambiguous the host drops it and logs, never guesses.** Guessing
+right saves you one key; guessing wrong puts something where it does not belong, in a
+way that looks like the plugin did it — and that is the hardest kind of bug to trace,
+because you will suspect your own code first.
 
 ### Values belong to the plugin
 
@@ -709,6 +1093,21 @@ form. They aren't defined by the plugin, but **their labels can be overridden**
 So: **don't add your own "synthesize" or "play" button to `UiSchema`** — the host already
 handles both. Spend the form on what's genuinely yours (model choice, voice,
 parameters, downloads).
+
+#### Only want a few of them?
+
+Add one `ponko.actions` line to the manifest — see ⑦ in §3. **No code change, no SDK
+rebuild.**
+
+#### "Synthesize" and "Stop" share one cell
+
+They are **mutually exclusive**: outside a synthesis only Synthesize is meaningful,
+during one only Stop is. So they occupy **the same cell** — after tapping start,
+Synthesize disappears and Stop takes its place, with identical position and width.
+
+This is host-internal layout; there is nothing for you to do. But if you moved
+`REASONING` elsewhere via `HostActionId`, then `STOP` gets the cell to itself (no
+empty slot left behind).
 
 > **Synthesising and playing are two separate actions with two separate buttons.**
 > Listening again is a **frequent** action, and re-synthesising on a phone costs
@@ -780,12 +1179,54 @@ understand than the original default it replaced.
 ## 10. Compatibility: when to bump the version
 
 ```kotlin
-const val API_VERSION = 3                   // AIDL surface version; any change bumps it
-const val API_WITH_SCHEMA = 2               // form methods exist from this version on
-const val API_WITH_ACTION_LABELS = 3        // button labels overridable from this version on
+const val API_VERSION = 12                  // AIDL surface version; any change bumps it
+const val API_WITH_SCHEMA = 2               // the form methods
+const val API_WITH_ACTION_LABELS = 3        // button labels overridable
+const val API_WITH_RICH_UI = 4              // log pane / images / playback bar, onUiPatch
+const val API_WITH_TABS = 5                 // tabs
+const val API_WITH_MODEL_IMPORT = 6         // model slots + deleteModel
+const val API_WITH_SYNTH_REQUEST = 7        // reverse synthesis / per-entry audio / HOST_SLOT
+const val API_WITH_TAB_SELECT = 8           // plugin switches pages
+const val API_WITH_HOST_ACTION_ITEMS = 9    // ACTION can name a host action
+const val API_WITH_LAYOUT_CONTAINERS = 10   // ROW / GRID / DIVIDER / SPACER
+const val API_WITH_IMAGE_KEY = 11           // images can name their target
+const val API_WITH_SCROLL_TO = 12           // plugin controls the scroll position
 const val API_MIN_SUPPORTED = 1             // oldest plugin the host accepts
-const val API_MAX_SUPPORTED = 3             // newest plugin the host accepts
+const val API_MAX_SUPPORTED = 12            // newest plugin the host accepts
 ```
+
+### What each version added
+
+| Version | Content | On an older host |
+|---|---|---|
+| v1 | engine + synthesis + audio | — |
+| v2 | `UiSchema` form | no form page |
+| v3 | overridable button labels | host defaults |
+| v4 | `LOG` / `IMAGE` / `AUDIO`, `onUiPatch`, `GROUP_*` | those three degrade to text blocks |
+| v5 | `TABS_*` | tabs degrade; all content piles up at the top |
+| v6 | `MODEL_SLOT` + `deleteModel` | slot degrades; users cannot pick model files |
+| v7 | `requestSynthesis` / `onAudioFile` / `HOST_SLOT` | block stays under the title; history can only play the latest |
+| v8 | `selectTab` | tabs only switchable by the user |
+| v9 | `HostActionId` | function buttons stay at the top |
+| v10 | `ROW` / `GRID` / `DIVIDER` / `SPACER` | **everything becomes one vertical column**; side-by-side items stack |
+| v11 | `onImageWithKey` | with several images, only the first gets filled |
+| v12 | `onScrollTo` | position follows host defaults; no active jumping |
+| v12.2 | `requestEngineLoad` / `requestEngineClose` / `pluginEngineState` | only `*Blocking` is reachable, so the state machine never updates — the host reloads and re-sends the synthesis |
+
+> **v12.1 is not in the table above on purpose**: it only changes host internals
+> (a `ViewPager` subclass measures every page in `onMeasure` and hands the max to
+> super), and `API_VERSION` stays at 12. So the same `pluginApi == 12` can jump to the
+> top on repaint (v12.0) or not (v12.1) — **the version number cannot tell them apart**.
+> When you need a definite position, always call `notifyScrollTo(key)` instead of
+> relying on the default.
+
+Gate compatibility checks on `pluginApi >= API_WITH_xxx`, **not** on `== latest`.
+
+> The v10 row deserves attention: layout containers on an older host are not
+> "slightly uglier", the **structure collapses**. If your plugin uses ROW but must run
+> on older hosts, at least make sure it still reads sensibly when items are simply
+> stacked vertically — i.e. each item inside a ROW should make sense on its own.
+
 
 ### Two kinds of change
 
@@ -912,13 +1353,152 @@ is the host's responsibility via `FLAG_KEEP_SCREEN_ON`. Neither replaces the oth
 - [ ] Any overridden button label is <= 12 characters, and the keys you did not override
       still show the host default (not an empty button)
 - [ ] A renamed button still does what its new name says (you did not relabel "Stop")
+- [ ] With several `IMAGE` controls you use `notifyImage(key, bitmap)`, not the keyless variant
+- [ ] Jumping somewhere after a repaint goes through `notifyScrollTo(key)` (the host will not do it)
+- [ ] Controls inside ROW / GRID still show their labels at half-screen width (nothing eaten by ellipses)
+- [ ] v10+ layout containers still read sensibly in the degenerate single-column case
+- [ ] Every id in `ponko.actions` is an action this plugin actually has (typos are dropped)
+- [ ] `values/` is present and holds your intended default language (a lone
+      `values-xx/` crashes on other languages)
+- [ ] All text is resolved on demand, not cached into fields in `onCreate`
+- [ ] `PluginException.notReady()` / `outOfMemory()` are given explicit messages
+      (the defaults are Chinese)
 - [ ] Disabling actually frees the plugin's model memory
 - [ ] If AIDL changed: SDK republished and plugin rebuilt
 - [ ] Identify builds by **sha256**, not byte size (adjacent builds can be byte-identical)
 
 ---
 
-## 14. Further reading
+## 14. Localisation: follow the system language, and `values/` is your default
+
+**No new interface is involved.** A plugin is its own process reading its own
+resources, and the host merely displays the strings you hand it — so "supporting
+multiple languages" is ordinary Android resource qualifiers.
+
+### The fallback chain is your "default language"
+
+Resource lookup steps down:
+
+```
+system language → use values-xx/ if present → otherwise fall back to values/ (no suffix)
+```
+
+So a "default language" needs no field at all — **it is whichever language you put
+in `values/`**.
+
+A plugin supporting Chinese and English, defaulting to Chinese: Chinese in
+`values/`, English in `values-en/`.
+
+| Device language | Resolves to | Shown |
+|---|---|---|
+| Chinese | no `values-zh` → fall back to `values/` | Chinese |
+| English | `values-en/` | English |
+| Russian | no `values-ru` → fall back to `values/` | Chinese (= your default) |
+
+For a **default of English**: English in `values/`, Chinese in `values-zh/`. That is
+what the host itself does.
+
+> ⚠ **`values/` must exist, and must hold a language you actually have.**
+> Shipping only `values-ru/` with no `values/` makes `getString()` throw
+> `Resources.NotFoundException` on a Chinese device and the plugin crashes.
+> A Russian-only plugin puts Russian in `values/`.
+
+### Where each piece of text comes from
+
+| Content | You provide it in | Localisable |
+|---|---|---|
+| Card title | your `values-xx/app_name` (system `loadLabel`) | ✅ |
+| `displayName` | `getString(R.string.x)` inside `createManifest()` | ✅ |
+| Page `label` / `help` | the strings in `UiSchema` | ✅ |
+| Button labels | `buildActionLabels()` | ✅ |
+| About text | `res/raw/`, with qualifiers like `res/raw-zh/` | ✅ |
+| Error messages | `PluginError.message` | ⚠️ see below |
+
+### The host also tells you its language: `hostLocaleTag` (v12.5)
+
+**Most plugins do not need this** — the resource qualifiers above are enough. It
+covers the three cases resources cannot:
+
+| Case | Why resources fall short |
+|---|---|
+| Translations are not in resources (JSON in `assets/`, model config) | the resource system knows nothing about your file format |
+| Android 13+ per-app language is set | plugin resources still follow the **system**, so they drift from the host UI |
+| Behaviour must change with language, not just characters (voice choice, number formats, sample text) | that is not string substitution |
+
+The host supplies its current UI language on every bind, and the base class reads
+it into:
+
+```kotlin
+protected val hostLocaleTag: String        // "zh-CN" / "en" / "ru" …
+protected fun localizedContext(): Context  // Context with that locale applied
+```
+
+Two ways to use it — **prefer the first if you have resources**:
+
+```kotlin
+// ① resources still resolve against the host language, with normal fallback
+val label = localizedContext().getString(R.string.engine_label)
+
+// ② translations live in assets, pick yourself
+val lang = hostLocaleTag.substringBefore('-')
+val pack = when (lang) {
+    "zh" -> loadJson("zh")
+    "en" -> loadJson("en")
+    else -> loadJson("ru")     // ← your default, required
+}
+```
+
+> ⚠ The `else` branch *is* your default language. Without it a Portuguese user sees
+> blanks or a crash.
+>
+> ⚠ Do not copy `hostLocaleTag` into a field in `onCreate` — the host rebinds on a
+> language change and the value moves; a copy stops updating.
+
+When the host does not supply it (older host), it returns the **system default**
+language, never an empty string.
+
+### Two traps
+
+**① Do not resolve strings in `onCreate` and keep them**
+
+```kotlin
+// ✗ stays in the old language after a switch
+private val title = getString(R.string.title)
+
+// ✓ resolve on every call
+override fun createManifest() = PluginManifest(displayName = getString(R.string.title), …)
+```
+
+The host **recreates its Activity when the system language changes**
+(`configChanges` does not include locale), so the connection is redone and
+`getSettingsSchema()` is called again. As long as your text is resolved on demand,
+the whole chain follows.
+
+**② `PluginException`'s default messages are Chinese, and cannot be changed**
+
+```kotlin
+// ✗ English users see a Chinese error
+throw PluginException.notReady()
+
+// ✓ pass your own
+throw PluginException.notReady(getString(R.string.err_not_ready))
+```
+
+The reason: those defaults live in the SDK, and **the SDK has no `res/` directory**,
+so they cannot be localised. Every factory with a default (`notReady` /
+`outOfMemory`) needs an explicit message.
+
+### Where the host stands
+
+The **host's own UI** follows the system language (English by default, Chinese in
+`values-zh/`). The plugin page joined it in v12.4 — before that it was entirely
+hardcoded Chinese, which produced mixed-language screens on English devices.
+
+**None of this changes your plugin**, but you may notice that on an English device
+the host-drawn buttons are English while your text is in whatever language your
+resources resolve to.
+
+## 15. Further reading
 
 - Design trade-offs and traps: [`../log/`](../log/) (Chinese only)
 - Interface definitions: `ponko-plugin-sdk/src/main/aidl/` in the host project

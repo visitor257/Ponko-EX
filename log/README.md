@@ -30,6 +30,11 @@
 | [2026-10-21-引擎加载时机由插件决定.md](2026-10-21-引擎加载时机由插件决定.md) | 连上就灌几个 G；`AUTOLOAD_ENGINE`；改样式把文字改回去；worktree 未提交就被删 |
 | [2026-10-22-引擎生命周期与试听语义.md](2026-10-22-引擎生命周期与试听语义.md) | 卸载后按钮不复位、试听不能重播、卸载窗口报 BUSY、注释里 `/*` 把代码注释掉 |
 | [2026-10-22-插件给宿主按钮改名.md](2026-10-22-插件给宿主按钮改名.md) | 往 `@Parcelize` 加字段会让老插件全崩；默认文案不该放 SDK；`preview.again` 是"两个动作被绑成一个"的补丁 |
+| [2026-10-23-插件界面从固定到自由-v4到v12.1.md](2026-10-23-插件界面从固定到自由-v4到v12.1.md) | v4→v12.1：`ponko.actions`、开始停止同格、`HOST_SLOT` 分段、ROW/GRID、清掉六处写死行为；"重画跳回最顶"连续判错两次（`ScrollView.onLayout` 会 clamp `mScrollY`，pager 高度必须挪进 `onMeasure`）；日志追加的外层位置锁防的是空威胁 |
+| [2026-10-23-插件拿不到引擎控制权.md](2026-10-23-插件拿不到引擎控制权.md) | `loadEngine`/`closeEngine`/`getStatus` 全在 private binder 里 → 插件只能直接调 `*Blocking`、状态机不动 → 宿主判 `NOT_READY` 重载并补发合成，**同一次合成跑两遍**；提取成 `doLoadEngine`/`doCloseEngine` + `requestEngineLoad`/`requestEngineClose`/`pluginEngineState`；`models` 必须缓存 |
+| [2026-10-23-启动提示与关于弹窗.md](2026-10-23-启动提示与关于弹窗.md) | 启动自动重连必然撞 stopped → 每次冷启动弹 toast（删掉，信息留在卡片）；卡片加「关于」= 插件写的 `ponko.about`（manifest，不走 AIDL，因为连不上时也要能看）；`android:resource` 的 meta-data 值是资源 id 不是文本；`setMessage` 复制不了 |
+| [2026-10-23-插件页接入i18n.md](2026-10-23-插件页接入i18n.md) | 插件侧多语言 = 普通资源限定符，`values/` 就是默认语言（只建 `values-xx/` 会崩）；宿主插件页是全 App 唯一没 i18n 的地方（~250 处硬编码）→ 抽成 671 条中英资源；拼接模板要重写成位置参数；撞 key 不报错只显示错 |
+| [2026-10-23-宿主语言传给插件与删耗时估算.md](2026-10-23-宿主语言传给插件与删耗时估算.md) | 宿主把界面语言放进 bind Intent extra → 基类暴露 `hostLocaleTag` / `localizedContext()`（AIDL 未动，老插件无感）；取 `configuration.locales[0]` 而非 `Locale.getDefault()`；删掉算不准的耗时估算（4.5 字/秒 是中文专属，跨语言必偏）|
 
 ## 一句话版（最容易忘的）
 
@@ -43,6 +48,24 @@
 - **接口写完不等于功能可用** —— `stopSpeaking()` 摆了很久没人调；
   参数在 `SynthesisRequest` 里躺了很久没人填。改完要问"哪个 UI 会触发它"
 - 接回调前先看**中间层怎么转发**：`PluginSession` 把 `CANCELLED` 从 error 改成了 stage
+- **`View.post` ≠ 布局完成**：凡要读 `height` / `getLocationInWindow` 的，等 `OnPreDrawListener`
+- **`ScrollView` 每次 layout 都 clamp `mScrollY`，而且只往下夹**：内容高度一抖位置就丢
+- **「不做干预」和「放任副作用」是两件事**：不替插件做决定，但自己搞坏的副作用必须修根因
+- **`protected` 的 `*Blocking` ≠ 插件能用的 API**：实现露出来了，状态机/front-service/回调还在 private binder 里
+- **一件事只要有两个入口（宿主/插件），实现就必须共用一份** —— 否则状态机会走岔
+- 给插件的新出口，默认参数要想"它那一刻手上有什么"：通常什么都没有，该由基类替它记住
+- **预期中的常态失败不该弹窗**（stopped 是 Android 机制，启动自动重连必然撞上）；删弹窗前先确认信息还在别处
+- 让用户复制长文本 → 必须 `setTextIsSelectable`，`AlertDialog.setMessage` 做不到
+- `android:resource` 的 meta-data 值是**资源 id（int）**，`getString` 会拿到一串数字
+- 关于/自述这类**静态**信息走 manifest：不用升 SDK，而且**插件连不上时也能看**
+- **`values/` 就是插件的"默认语言"**，不用字段；但只建 `values-xx/` 会在别的语言上崩
+- 文案要**用到时现算**：切语言会重建 Activity，`onCreate` 里缓存的不会变
+- **SDK 没有 `res/`**，所以 `PluginException` 的默认文案天生无法本地化，必须自己传
+- 批量替换中文 → 资源：注释行要排除；撞 key **不报错**，靠两份 key 集合比对兜住
+- **静态/单向/每次连接都重给**的信息 → Intent extra，不要 AIDL（不动接口、不重编插件）
+- 传语言取 `configuration.locales[0]`，不是 `Locale.getDefault()`；标签用 `toLanguageTag()`，别拼
+- **算不准的估算比没有更糟**：用户会拿它做判断，误差几倍就变成"看起来卡死了"
+- 需求里的硬约束（"不动 AIDL / 不发 AAR"）= 对方算过成本，别绕开它设计
 - `wakeLock.acquire(t)` 是一次性的，到点就掉；长任务必须续期
 - **别用下游性能约束限制上游输入**：40 字上限是按某个模型的 RTF 算的，
   却成了所有插件的界面规则。该做的是把耗时摆给用户看，不是替他决定
