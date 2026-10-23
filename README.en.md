@@ -1,6 +1,6 @@
 # Ponko-EX
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Release](https://img.shields.io/github/v/release/visitor257/Ponko-EX?label=plugin&color=success) ![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white) ![minSdk](https://img.shields.io/badge/minSdk-28-orange.svg) ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-lightgrey.svg) ![Host](https://img.shields.io/badge/host-Ponko%202.0.0%2B-informational) ![API](https://img.shields.io/badge/plugin%20API-v12-blueviolet)
+![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white) ![minSdk](https://img.shields.io/badge/minSdk-28-orange.svg) ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-lightgrey.svg) ![Host](https://img.shields.io/badge/host-Ponko%202.0.0%2B-informational) ![API](https://img.shields.io/badge/plugin%20API-v12-blueviolet)
 
 > The plugin project for Ponko — capabilities like speech synthesis live in
 > plugins instead of the main app.
@@ -11,19 +11,17 @@
 
 English · [中文](README.md)
 
-**Two paths — pick yours:**
+**This repository holds docs and conventions only — no install instructions.**
+Obtaining and installing a plugin is each plugin line's own business; what lives
+here is how to write one, what the interface looks like, and why it is shaped
+that way.
 
-| I want to | Go to |
-|---|---|
-| **Install a plugin and use it** (VoxCPM2 speech synthesis) | [Download and install](#download-and-install) |
-| **Write my own plugin** | [Prerequisite: publish the plugin SDK](#prerequisite-publish-the-plugin-sdk) → [Building](#building) → [Signing](#signing-critical) |
-
-- Developer's guide: [`doc/plugin-guide.en.md`](doc/plugin-guide.en.md) · Why it is designed this way: [`log/`](log/)
+- Developer's guide: [`doc/plugin-guide.en.md`](doc/plugin-guide.en.md)
+- Design notes and traps hit along the way: [`log/`](log/)
 
 ## Contents
 
 - [Plugins](#plugins)
-- [Download and install](#download-and-install)
 - [Prerequisite: publish the plugin SDK](#prerequisite-publish-the-plugin-sdk)
 - [Building](#building)
 - [Signing (critical)](#signing-critical)
@@ -37,68 +35,10 @@ English · [中文](README.md)
 
 ## Plugins
 
-| Plugin | What it does | Branch | Latest release |
+| Plugin | What it does | Branch | Version |
 |---|---|---|---|
-| **VoxCPM2 Speech** | Local text-to-speech, CPU-only inference on the phone | `Ponko-EX_VoxCPM2` | [0.9.0](https://github.com/visitor257/Ponko-EX/releases/tag/voxcpm2-0.9.0) |
+| **VoxCPM2 Speech** | Local text-to-speech, CPU-only inference on the phone | `Ponko-EX_VoxCPM2` | `0.9.0` |
 | **Echo** | Does nothing — verifies the plugin pipeline and doubles as a template | `Ponko-EX_test` | — |
-
----
-
-# Using
-
-## Download and install
-
-### 1. Install the host first
-
-Ponko **2.0.0 or newer**: <https://github.com/visitor257/Ponko/releases>
-
-Plugins talk to the host over its plugin SDK. Below 2.0.0 (plugin API 12) the
-host **binds nothing**.
-
-### 2. Then the plugin
-
-Grab `Ponko-EX_VoxCPM2_0.9.0.apk` from
-[Releases](https://github.com/visitor257/Ponko-EX/releases) and install it like
-any other APK.
-
-### 3. Get the weights
-
-**Model weights are not in the APK** (far too large to bundle):
-
-| Method | Details |
-|---|---|
-| Download in-app | The plugin's Model tab. Standard Q8 ~**3.55 GB** / Lite Q4 ~**2.83 GB**; resumable, three mirrors |
-| Import your own | Two GGUF files: BaseLM + Acoustic |
-
-> Budget the file size **plus** an in-memory copy of it.
-
-### 4. Use it
-
-Ponko → Plugins → VoxCPM2 → prepare weights in the Model tab → **Load model** → **Synthesize**
-
-Requirements and expectations:
-
-| Item | Value |
-|---|---|
-| OS | Android 9+ (minSdk 28) |
-| ABI | arm64 |
-| RAM | **8 GB recommended** |
-| Speed | CPU-only, roughly **1–2 minutes** for 5 seconds of speech |
-
-On signing: release APKs are already signed with the **host's key** (v1 + v2 +
-v3). The host guards plugin binding with a `protectionLevel="signature"`
-permission, so a differently-signed plugin makes `bindService` throw
-`SecurityException` — see [Signing](#signing-critical) if you build your own.
-
-### Verifying a download
-
-```bat
-certutil -hashfile Ponko-EX_VoxCPM2_0.9.0.apk SHA256
-apksigner verify --verbose --min-sdk-version 23 Ponko-EX_VoxCPM2_0.9.0.apk
-```
-
-0.9.0 is sha256 `a44f55c8b2729990841f5f63e386e54c786648323e1e23338b8ff80c8b06a9c8`,
-4,699,635 bytes.
 
 ---
 
