@@ -1093,6 +1093,18 @@ class VoxCpm2PluginService : PonkoPluginService() {
         // ==================== 页 3 · 结果 ====================
         items += UiItem(key = TAB_RESULT, type = UiType.TAB, label = "结果")
 
+        // 页首锚点（0 高度，看不见）：跳过来之后 `notifyScrollTo` 滚到它。
+        //
+        // 为什么需要：三页共用一个外层 ScrollView，而且 pager 按**最高那页**定高
+        // （宿主的 stretchToTallestPage）。在参数页滚到一半点合成，翻到结果页时
+        // 外层 scrollY 还是参数页那个值 —— 结果页内容比它短，屏幕上就是一片空白。
+        // 宿主 v12 起不再替插件恢复/重置滚动，于是这里显式说"回到页首"。
+        //
+        // 用 SPACER 而不是别的控件：它 0 高度、不占地方，但走的是普通 item 的
+        // 渲染路径，会被登记进宿主的 keyedViews —— TAB 标签本身不登记，所以
+        // 不能拿 TAB 当锚点。
+        items += UiItem(key = KEY_RES_TOP, type = UiType.SPACER, value = "0")
+
         if (lastAudioSec <= 0.0) {
             items += UiItem(
                 key = "res_empty", type = UiType.INFO,
@@ -1174,10 +1186,20 @@ class VoxCpm2PluginService : PonkoPluginService() {
      * [notifySelectTab] 自己 catch 掉 —— 老宿主上是静默无效，不用判版本。
      *
      * 不判断"用户是不是正在别的页"：合成是他点的，翻过去就是他要看的东西。
+     *
+     * v12 起多一步：翻页之后还要显式 `notifyScrollTo` 回到结果页页首。
+     * 宿主不再替插件重置滚动位置，不声明的话会停在参数页留下的偏移上。
      */
     private fun jumpToResultPage() {
         mainHandler.postDelayed({
             runCatching { notifySelectTab(GROUP_TABS, TAB_RESULT) }
+            // v12 起宿主**不再**动滚动位置（重画/切页都不动）。三页共用外层 ScrollView，
+            // 在参数页滚了一半再翻到结果页，停的还是那个偏移 —— 结果页更短，屏幕上是空白。
+            // 所以这里显式说"回到结果页页首"，锚点是那个 0 高度 SPACER。
+            //
+            // 老宿主没有 `onScrollTo`（v12 追加）：基类内部 catch 后打一行日志，
+            // 翻页照常生效，不需要在这里判版本。
+            runCatching { notifyScrollTo(KEY_RES_TOP) }
         }, TAB_SELECT_DELAY_MS)
     }
 
@@ -1571,6 +1593,14 @@ class VoxCpm2PluginService : PonkoPluginService() {
 
         /** 「结果」页的 key。合成成功后自动翻到这里 */
         private const val TAB_RESULT = "tab_result"
+
+        /**
+         * 结果页页首的 0 高度锚点，给 `notifyScrollTo` 用（SDK v12）。
+         *
+         * TAB 标签本身没有被宿主登记进 `keyedViews`，不能当滚动目标；
+         * 这里放一个看不见的 SPACER 当"页首"。
+         */
+        private const val KEY_RES_TOP = "res_top"
 
         /** 推理历史留几条。只放内存，关掉进程就没了（见 [Record] 的说明） */
         private const val HISTORY_KEEP = 5
