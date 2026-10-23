@@ -364,6 +364,7 @@ class MyPluginService : PonkoPluginService() {
 | `requestEngineLoad()` | v12.2 | **加载引擎**（走基类状态机，见下节） |
 | `requestEngineClose()` | v12.2 | **释放引擎**（同上） |
 | `pluginEngineState` | v12.2 | 当前引擎状态，给自己画界面用 |
+| `hostLocaleTag` / `localizedContext()` | v12.5 | 宿主当前界面语言（见 §14） |
 
 `callback` 字段是 private 的 —— 没有这些方法你就调不到回调，只能自己存 IBinder。
 
@@ -1254,13 +1255,131 @@ Binder 全进程只有 1 MB 配额。传 `ByteArray` 超过这个量会炸，
 - [ ] 嵌在 ROW / GRID 里的控件，在窄半屏下文案没有被省略号吃掉
 - [ ] 用了 v10+ 的布局容器，且在只有一列的极端情况下仍然能读懂
 - [ ] `ponko.actions` 里写的 id 都是这个插件真有的动作（拼错的会被丢弃）
+- [ ] `values/` 有东西，且是你要的默认语言（只建 `values-xx/` 会在别的语言上崩）
+- [ ] 所有文案都是**用到时现算**的，没有在 `onCreate` 里缓存成字段
+- [ ] `PluginException.notReady()` / `outOfMemory()` 都显式传了自己的文案（默认值是中文）
 - [ ] 停用后插件的模型内存确实释放了
 - [ ] 改过 AIDL 的话：SDK 已重发，插件已重编
 - [ ] 判包看 **sha256**，不是字节数（相邻版本字节数可能完全相同）
 
 ---
 
-## 14. 更多
+## 14. 多语言：跟系统语言走，`values/` 就是默认语言
+
+**你不需要任何新接口。** 插件是独立进程，读自己的资源，宿主只显示你给的字符串 ——
+所以"支持多语言"就是普通的 Android 资源限定符。
+
+### 规则：回落链就是你的"默认语言"
+
+Android 的资源查找是**逐级回落**的：
+
+```
+系统语言 → 有对应 values-xx/ 就用 → 没有就落到 values/（无后缀 = 兜底）
+```
+
+所以「设置默认语言」不需要字段，**取决于你把哪门语言放进 `values/`**。
+
+举个例子 —— 一个支持中英、默认中文的插件：`values/` 放中文，`values-en/` 放英文。
+
+| 用户手机语言 | 命中 | 显示 |
+|---|---|---|
+| 中文 | 无 `values-zh` → 回落 `values/` | 中文 |
+| 英文 | `values-en/` | 英文 |
+| 俄文 | 无 `values-ru` → 回落 `values/` | 中文（= 你的默认语言） |
+
+想要**默认英文**：`values/` 放英文，中文放 `values-zh/`。也是宿主自己的做法。
+
+> ⚠ **`values/` 必须存在，而且必须放一门你真正拥有的语言。**
+> 只建 `values-ru/` 而不建 `values/`，中文手机上 `getString()` 会抛
+> `Resources.NotFoundException`，插件直接崩。俄文插件就把俄文放 `values/`。
+
+### 每一处文案从哪来
+
+| 内容 | 你在哪提供 | 能否本地化 |
+|---|---|---|
+| 卡片标题 | 你的 `values-xx/app_name`（系统 `loadLabel`） | ✅ |
+| `displayName` | `createManifest()` 里 `getString(R.string.x)` | ✅ |
+| 界面 `label` / `help` | `UiSchema` 里的字符串 | ✅ |
+| 按钮文案 | `buildActionLabels()` | ✅ |
+| 关于文档 | `res/raw/`，可用 `res/raw-zh/` 等限定符 | ✅ |
+| 错误文案 | `PluginError.message` | ⚠️ 见下 |
+
+### 宿主也会把语言告诉你：`hostLocaleTag`（v12.5）
+
+**大多数情况下你不需要它** —— 上面的资源限定符已经够了。它解决的是资源解决不了的三类问题：
+
+| 情况 | 为什么资源不够 |
+|---|---|
+| 译文不在资源里（放 `assets/` 的 JSON、模型配置） | 资源系统管不到你自己的文件格式 |
+| Android 13+ 给单个 App 设了语言 | 插件资源仍跟**系统**走，会和宿主界面对不上 |
+| 要按语言改行为而不只是换字（选音色、数字格式、示例文本） | 那不是字符串替换能表达的 |
+
+宿主每次绑定都会把当前界面语言带过来，基类读出来暴露成：
+
+```kotlin
+protected val hostLocaleTag: String        // "zh-CN" / "en" / "ru" …
+protected fun localizedContext(): Context  // 按它覆盖过 configuration 的 Context
+```
+
+两种用法 —— **有资源就用第一种**：
+
+```kotlin
+// ① 资源照样按宿主语言解析（含正常的多级回落）
+val label = localizedContext().getString(R.string.engine_label)
+
+// ② 译文在 assets 里，自己挑
+val lang = hostLocaleTag.substringBefore('-')
+val pack = when (lang) {
+    "zh" -> loadJson("zh")
+    "en" -> loadJson("en")
+    else -> loadJson("ru")     // ← 你的默认语言，必须有
+}
+```
+
+> ⚠ `else` 分支就是你的"默认语言"。缺了它，一个葡萄牙语用户会看到空白或崩溃。
+>
+> ⚠ 别在 `onCreate` 里把 `hostLocaleTag` 抄进字段当常量 —— 宿主换语言会重新绑定、
+> 值会变，抄一次之后就不再更新了。
+
+宿主没传时（老宿主）它返回**系统默认语言**，不会给你空串。
+
+### 两个必须注意的坑
+
+**① 不要在 `onCreate` 里把字符串算好存起来**
+
+```kotlin
+// ✗ 切语言后永远是旧语言
+private val title = getString(R.string.title)
+
+// ✓ 每次被调用时现算
+override fun createManifest() = PluginManifest(displayName = getString(R.string.title), …)
+```
+
+宿主在**系统语言变化时会重建 Activity**（`configChanges` 不含 locale），
+所以连接会重走、`getSettingsSchema()` 会重拉。只要你的文案是现算的，整条链路就跟着变。
+
+**② `PluginException` 的默认文案是中文，而且改不了**
+
+```kotlin
+// ✗ 英文用户会看到中文报错
+throw PluginException.notReady()
+
+// ✓ 自己传
+throw PluginException.notReady(getString(R.string.err_not_ready))
+```
+
+原因：这些默认值在 SDK 里，**SDK 没有 `res/` 目录**，所以它们无法本地化。
+所有带默认值的工厂方法（`notReady` / `outOfMemory`）都必须显式传文案。
+
+### 宿主这边是什么状态
+
+宿主**自己的界面**按系统语言显示（默认英文，中文在 `values-zh/`）。
+插件页从 v12.4 起也接上了 —— 之前它是全中文硬编码，英文系统上会中英混排。
+
+**这不影响你的插件**，但你可能会注意到：同一个插件在英文系统上，
+宿主画的按钮是英文、你提供的文案是什么语言取决于你的资源。
+
+## 15. 更多
 
 - 设计取舍与踩过的坑：[`../log/`](../log/)
 - 接口定义原文：宿主工程的 `ponko-plugin-sdk/src/main/aidl/`
