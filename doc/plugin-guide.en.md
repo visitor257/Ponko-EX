@@ -177,6 +177,39 @@ with one line in logcat saying which. One misspelt word will not wipe out the ro
 > 加载 — at the cost of loading gigabytes of weights the moment you connect. Binding
 > two unrelated concerns to one switch means neither works well.
 
+### ⑧ Optional: give the card an "About" entry (v12.3)
+
+Every card in the plugin page has an "About" button. It opens a plain-text dialog
+that can be selected and copied in one tap. The content comes from here:
+
+```xml
+<!-- one short line -->
+<meta-data android:name="ponko.about" android:value="VoxCPM2 local speech · MIT" />
+
+<!-- a longer document in res/raw/about.txt -->
+<meta-data android:name="ponko.about" android:resource="@raw/about" />
+```
+
+| Form | Use | Fits |
+|---|---|---|
+| `android:value` | inline string | a sentence or two |
+| `android:resource` | `res/raw/*.txt`, `res/raw/*.md` | multi-paragraph notes (model licence, changelog, credits) |
+
+Both `<service>` and `<application>` are read, **service first** (same as `ponko.actions`).
+
+**If you don't declare it, the dialog shows "无"** — that is not an error, just two
+characters. Existing plugins are unaffected.
+
+> What's worth writing: version requirements, where the model came from and its
+> licence, how to reach the author. People open "About" to answer "can I use this
+> commercially" and "where did this model come from", not to read a feature list
+> (the card already has one).
+
+> **Why a manifest entry and not AIDL**: the about text is static and versioned with
+> the APK. The bigger reason is that **it must be readable when the plugin cannot
+> connect**. The moment a card most needs "what is this" is exactly when the plugin
+> sits in stopped state or has failed to bind — over AIDL that would show "无" too.
+
 ### Item 6 is easy to get backwards
 
 `android:permission` on a `<service>` constrains the **caller**, not the plugin.

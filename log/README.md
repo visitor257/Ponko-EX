@@ -32,6 +32,7 @@
 | [2026-10-22-插件给宿主按钮改名.md](2026-10-22-插件给宿主按钮改名.md) | 往 `@Parcelize` 加字段会让老插件全崩；默认文案不该放 SDK；`preview.again` 是"两个动作被绑成一个"的补丁 |
 | [2026-10-23-插件界面从固定到自由-v4到v12.1.md](2026-10-23-插件界面从固定到自由-v4到v12.1.md) | v4→v12.1：`ponko.actions`、开始停止同格、`HOST_SLOT` 分段、ROW/GRID、清掉六处写死行为；"重画跳回最顶"连续判错两次（`ScrollView.onLayout` 会 clamp `mScrollY`，pager 高度必须挪进 `onMeasure`）；日志追加的外层位置锁防的是空威胁 |
 | [2026-10-23-插件拿不到引擎控制权.md](2026-10-23-插件拿不到引擎控制权.md) | `loadEngine`/`closeEngine`/`getStatus` 全在 private binder 里 → 插件只能直接调 `*Blocking`、状态机不动 → 宿主判 `NOT_READY` 重载并补发合成，**同一次合成跑两遍**；提取成 `doLoadEngine`/`doCloseEngine` + `requestEngineLoad`/`requestEngineClose`/`pluginEngineState`；`models` 必须缓存 |
+| [2026-10-23-启动提示与关于弹窗.md](2026-10-23-启动提示与关于弹窗.md) | 启动自动重连必然撞 stopped → 每次冷启动弹 toast（删掉，信息留在卡片）；卡片加「关于」= 插件写的 `ponko.about`（manifest，不走 AIDL，因为连不上时也要能看）；`android:resource` 的 meta-data 值是资源 id 不是文本；`setMessage` 复制不了 |
 
 ## 一句话版（最容易忘的）
 
@@ -51,6 +52,10 @@
 - **`protected` 的 `*Blocking` ≠ 插件能用的 API**：实现露出来了，状态机/front-service/回调还在 private binder 里
 - **一件事只要有两个入口（宿主/插件），实现就必须共用一份** —— 否则状态机会走岔
 - 给插件的新出口，默认参数要想"它那一刻手上有什么"：通常什么都没有，该由基类替它记住
+- **预期中的常态失败不该弹窗**（stopped 是 Android 机制，启动自动重连必然撞上）；删弹窗前先确认信息还在别处
+- 让用户复制长文本 → 必须 `setTextIsSelectable`，`AlertDialog.setMessage` 做不到
+- `android:resource` 的 meta-data 值是**资源 id（int）**，`getString` 会拿到一串数字
+- 关于/自述这类**静态**信息走 manifest：不用升 SDK，而且**插件连不上时也能看**
 - 需求里的硬约束（"不动 AIDL / 不发 AAR"）= 对方算过成本，别绕开它设计
 - `wakeLock.acquire(t)` 是一次性的，到点就掉；长任务必须续期
 - **别用下游性能约束限制上游输入**：40 字上限是按某个模型的 RTF 算的，
