@@ -331,6 +331,9 @@ class MyPluginService : PonkoPluginService() {
 | `notifyAudioFile(key, fd, name)` | v7 | 给某条历史记录单独送音频 |
 | `notifySelectTab(groupKey, tabKey)` | v8 | 请宿主切页 |
 | `notifyScrollTo(key)` | v12 | 请宿主滚到某一项 |
+| `requestEngineLoad()` | v12.2 | **加载引擎**（走基类状态机，见下节） |
+| `requestEngineClose()` | v12.2 | **释放引擎**（同上） |
+| `pluginEngineState` | v12.2 | 当前引擎状态，给自己画界面用 |
 
 `callback` 字段是 private 的 —— 没有这些方法你就调不到回调，只能自己存 IBinder。
 
@@ -613,6 +616,50 @@ override fun onActionInvoked(key: String) {
 
 它和 `synthesize` 的区别：`synthesize` 是宿主命令你干活；这个是你请宿主下令，
 最后仍然会走到你的 `synthesizeBlocking`。
+
+### 自己的按钮要加载 / 释放引擎：用 `requestEngineLoad()`（v12.2）
+
+**这是最容易踩的一个坑，而且症状很吓人。**
+
+`loadEngineBlocking()` 是 `protected` 的，看起来"插件能调"。但它只是
+**纯阻塞实现** —— 状态机、前台服务、回调全在别处。你直接调它，后果是：
+
+| 你看到的 | 实际原因 |
+|---|---|
+| 宿主那行「引擎」一直显示"未加载" | 基类 `state` 还是 `UNLOADED` |
+| 点了合成，等 1~2 分钟，**出来两份结果** | 宿主判 `NOT_READY` → 自己再加载一遍 → 加载完**补发一次合成** |
+| 前台服务通知不出现 | 没有 `onEngineLoaded`，通知不会挂在"加载中" |
+
+原因很简单：`loadEngine` / `closeEngine` / `getStatus` / `isEngineReady` 都写在
+binder 里，而 binder 是 private —— **插件一个都拿不到**。这是 SDK 之前的一个真缺口。
+
+```kotlin
+override fun onActionInvoked(key: String) {
+    when (key) {
+        "load"  -> requestEngineLoad()      // 不要直接调 loadEngineBlocking
+        "close" -> requestEngineClose()     // 不要直接调 closeEngineBlocking
+    }
+}
+
+// 自己画状态标签
+val loaded = pluginEngineState == EngineState.READY ||
+             pluginEngineState == EngineState.RUNNING
+```
+
+| 方法 | 返回 | 说明 |
+|---|---|---|
+| `requestEngineLoad(models = null, config = null)` | `true` = 真的发起了 | 幂等：已加载/正在加载时返回 `false`，什么都没做 |
+| `requestEngineClose()` | `true` = 真的发起了 | 本来就没加载时返回 `false` |
+| `pluginEngineState` | `EngineState.*` | `UNLOADED` / `LOADING` / `READY` / `RUNNING`，O(1) |
+
+**不传 `models` 也没关系** —— 基类缓存了宿主最近一次给的那份（`ModelBundle` +
+`EngineConfig`），不传就复用。所以不用担心"插件按钮发起加载会把用户导入的模型丢掉"。
+
+`closeEngineBlocking()` 同理：直接调它只 free 了内存，`state` 还停在 `READY`，
+宿主会以为引擎还在、继续把合成请求发过来。
+
+> 只在你**确定要绕开状态机**时才直接用 `*Blocking`（比如单元测试）。
+> 正常流程一律走 `request*`。
 
 ### 流式（可选）
 
@@ -1046,6 +1093,7 @@ const val API_MAX_SUPPORTED = 12            // 宿主接受的最新插件
 | v10 | `ROW` / `GRID` / `DIVIDER` / `SPACER` | **整页只剩纵向一列**，并排的会上下叠 |
 | v11 | `onImageWithKey` | 多图时只能贴第一张 |
 | v12 | `onScrollTo` | 位置由宿主默认行为决定，不能主动跳 |
+| v12.2 | `requestEngineLoad` / `requestEngineClose` / `pluginEngineState` | 插件只能直接调 `*Blocking`，状态机不更新 → 宿主会重复加载并补发合成 |
 
 > **v12.1 不在上面这张表里**：它只改宿主内部（`ViewPager` 子类在 `onMeasure` 里
 > 遍历所有页取最高），`API_VERSION` 仍是 12。也就是说同一个 `pluginApi == 12`，

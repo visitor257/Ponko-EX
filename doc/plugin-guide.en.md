@@ -344,6 +344,9 @@ class MyPluginService : PonkoPluginService() {
 | `notifyAudioFile(key, fd, name)` | v7 | Audio for one history entry |
 | `notifySelectTab(groupKey, tabKey)` | v8 | Ask the host to switch pages |
 | `notifyScrollTo(key)` | v12 | Ask the host to scroll to an item |
+| `requestEngineLoad()` | v12.2 | **Load the engine** (through the base-class state machine) |
+| `requestEngineClose()` | v12.2 | **Release the engine** (same) |
+| `pluginEngineState` | v12.2 | Current engine state, for drawing your own UI |
 
 The `callback` field is private — without these methods you cannot reach the
 callback at all and would have to hold the IBinder yourself.
@@ -663,6 +666,54 @@ There is no second synthesis path, and therefore no second set of bugs.
 The difference from `synthesize`: that one is the host telling you to work; this one
 is you asking the host to give the order. Either way it lands in your
 `synthesizeBlocking`.
+
+### Loading / releasing the engine from your own button (v12.2)
+
+**This is the easiest trap to fall into, and the symptom is alarming.**
+
+`loadEngineBlocking()` is `protected`, so it looks callable. But it is only the
+**blocking implementation** — the state machine, the foreground service and the
+callbacks all live elsewhere. Call it directly and:
+
+| What you see | Why |
+|---|---|
+| The host's「引擎」line always says "not loaded" | the base class `state` is still `UNLOADED` |
+| You tap synthesize, wait 1–2 minutes, and get **two results** | the host sees `NOT_READY`, loads the engine itself, then **re-sends the synthesis** |
+| No foreground-service notification | no `onEngineLoaded`, so the notification never sits in "loading" |
+
+The cause is simple: `loadEngine` / `closeEngine` / `getStatus` / `isEngineReady`
+are all inside the binder, and the binder is private — **a plugin cannot reach any
+of them**. That was a genuine SDK gap.
+
+```kotlin
+override fun onActionInvoked(key: String) {
+    when (key) {
+        "load"  -> requestEngineLoad()      // not loadEngineBlocking
+        "close" -> requestEngineClose()     // not closeEngineBlocking
+    }
+}
+
+// drawing your own status label
+val loaded = pluginEngineState == EngineState.READY ||
+             pluginEngineState == EngineState.RUNNING
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `requestEngineLoad(models = null, config = null)` | `true` = actually started | idempotent: `false` if already loaded or loading, and nothing happens |
+| `requestEngineClose()` | `true` = actually started | `false` if it was not loaded |
+| `pluginEngineState` | `EngineState.*` | `UNLOADED` / `LOADING` / `READY` / `RUNNING`, O(1) |
+
+**Omitting `models` is fine** — the base class caches the `ModelBundle` and
+`EngineConfig` the host supplied last time and reuses them. So a plugin-initiated
+load will not lose the user's imported model.
+
+`closeEngineBlocking()` is the same story: calling it only frees memory while
+`state` stays `READY`, so the host believes the engine is still there and keeps
+sending synthesis requests.
+
+> Use the `*Blocking` variants directly only when you deliberately want to bypass
+> the state machine (unit tests, for instance). Normal flows go through `request*`.
 
 ### Streaming (optional)
 
@@ -1126,6 +1177,7 @@ const val API_MAX_SUPPORTED = 12            // newest plugin the host accepts
 | v10 | `ROW` / `GRID` / `DIVIDER` / `SPACER` | **everything becomes one vertical column**; side-by-side items stack |
 | v11 | `onImageWithKey` | with several images, only the first gets filled |
 | v12 | `onScrollTo` | position follows host defaults; no active jumping |
+| v12.2 | `requestEngineLoad` / `requestEngineClose` / `pluginEngineState` | only `*Blocking` is reachable, so the state machine never updates — the host reloads and re-sends the synthesis |
 
 > **v12.1 is not in the table above on purpose**: it only changes host internals
 > (a `ViewPager` subclass measures every page in `onMeasure` and hands the max to

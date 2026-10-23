@@ -31,6 +31,7 @@
 | [2026-10-22-引擎生命周期与试听语义.md](2026-10-22-引擎生命周期与试听语义.md) | 卸载后按钮不复位、试听不能重播、卸载窗口报 BUSY、注释里 `/*` 把代码注释掉 |
 | [2026-10-22-插件给宿主按钮改名.md](2026-10-22-插件给宿主按钮改名.md) | 往 `@Parcelize` 加字段会让老插件全崩；默认文案不该放 SDK；`preview.again` 是"两个动作被绑成一个"的补丁 |
 | [2026-10-23-插件界面从固定到自由-v4到v12.1.md](2026-10-23-插件界面从固定到自由-v4到v12.1.md) | v4→v12.1：`ponko.actions`、开始停止同格、`HOST_SLOT` 分段、ROW/GRID、清掉六处写死行为；"重画跳回最顶"连续判错两次（`ScrollView.onLayout` 会 clamp `mScrollY`，pager 高度必须挪进 `onMeasure`）；日志追加的外层位置锁防的是空威胁 |
+| [2026-10-23-插件拿不到引擎控制权.md](2026-10-23-插件拿不到引擎控制权.md) | `loadEngine`/`closeEngine`/`getStatus` 全在 private binder 里 → 插件只能直接调 `*Blocking`、状态机不动 → 宿主判 `NOT_READY` 重载并补发合成，**同一次合成跑两遍**；提取成 `doLoadEngine`/`doCloseEngine` + `requestEngineLoad`/`requestEngineClose`/`pluginEngineState`；`models` 必须缓存 |
 
 ## 一句话版（最容易忘的）
 
@@ -47,6 +48,9 @@
 - **`View.post` ≠ 布局完成**：凡要读 `height` / `getLocationInWindow` 的，等 `OnPreDrawListener`
 - **`ScrollView` 每次 layout 都 clamp `mScrollY`，而且只往下夹**：内容高度一抖位置就丢
 - **「不做干预」和「放任副作用」是两件事**：不替插件做决定，但自己搞坏的副作用必须修根因
+- **`protected` 的 `*Blocking` ≠ 插件能用的 API**：实现露出来了，状态机/front-service/回调还在 private binder 里
+- **一件事只要有两个入口（宿主/插件），实现就必须共用一份** —— 否则状态机会走岔
+- 给插件的新出口，默认参数要想"它那一刻手上有什么"：通常什么都没有，该由基类替它记住
 - 需求里的硬约束（"不动 AIDL / 不发 AAR"）= 对方算过成本，别绕开它设计
 - `wakeLock.acquire(t)` 是一次性的，到点就掉；长任务必须续期
 - **别用下游性能约束限制上游输入**：40 字上限是按某个模型的 RTF 算的，
