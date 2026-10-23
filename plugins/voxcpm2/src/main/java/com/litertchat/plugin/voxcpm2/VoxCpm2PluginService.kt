@@ -454,7 +454,7 @@ class VoxCpm2PluginService : PonkoPluginService() {
         displayName = "VoxCPM2 语音合成",
         // 和 plugins/voxcpm2/build.gradle.kts 的 versionName 保持一致。
         // 以前这里停在 "0.5.0" 没跟着动，插件卡片上显示的版本号是假的。
-        versionName = "0.7.4",
+        versionName = "0.7.5",
         author = "visitor257",
         // 真实语音合成 —— 和 Echo 那个 TEST 不同，这个会被宿主的「朗读回答」路由选中
         capabilities = listOf(Capability.TTS),
@@ -475,6 +475,10 @@ class VoxCpm2PluginService : PonkoPluginService() {
             // 以前那儿只会闪一下又变回"未加载"，看着就是"点了没反应"。
             engineNote = "加载失败：${briefReason(t)}"
             logLine("加载失败：${t.message ?: t.javaClass.simpleName}")
+            // 必须在这里重画：加载**不一定是插件页发起的**。宿主功能区的
+            // 「加载模型」走 `loadEngine()` → worker → 这个方法，那条路上没有任何
+            // 插件代码会重画页面，原因就只留在字段里、界面永远看不见。
+            notifySchemaChanged()
             throw t
         }
 
