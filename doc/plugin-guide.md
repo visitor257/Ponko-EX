@@ -150,6 +150,30 @@ include(":plugins:echo")          // 新线就再加一行
 | ⑤ | `foregroundServiceType` + subtype 属性 | Android 14+ 不允许启动前台服务 |
 | ⑥ | `android:permission` | 少了它谁都能 bind；写错方向则自己被挡住 |
 
+### ⑦ 可选：只让宿主显示哪几个按钮（v9.1）
+
+宿主默认会把「加载 / 合成 / 播放 / 停止 / 保存」全画出来。如果你只用得上其中几个，
+在 `<service>`（或 `<application>`）里加一行就能砍掉其余的：
+
+```xml
+<meta-data android:name="ponko.actions" android:value="reasoning,stop" />
+```
+
+| 写法 | 结果 |
+|---|---|
+| **不写** | 显示全部（老插件不受影响） |
+| `"reasoning,stop"` | 只留这两个 |
+| `""`（空串） | 一个都不画（参数区还在，用户仍能填文本） |
+
+**不需要改 AIDL，也不用重发 SDK —— 加一行 manifest 就生效。**
+
+值里写了不存在的 id（拼错，或要了一个这个插件本来没有的动作），那一项会被丢弃，
+`logcat` 里有一行说明。不会因为一个拼错的词整排消失。
+
+> 为什么要这一行：以前唯一的开关是 `AUTOLOAD_ENGINE`，它确实能让「加载」消失，
+> 代价是一连上就加载几个 G 的权重。把两件不相干的事绑在同一个开关上，
+> 结果就是两个都用不好。
+
 ### ⑥ 的方向容易搞反
 
 `android:permission` 约束的是**调用方**（bind 你的那一方），不是你自己。
@@ -195,7 +219,7 @@ class MyPluginActivator : PonkoActivatorActivity()
 
 ---
 
-## 5. AIDL 接口速查（API v2）
+## 5. AIDL 接口速查（API v12）
 
 ### 宿主 → 插件
 
@@ -213,8 +237,10 @@ class MyPluginActivator : PonkoActivatorActivity()
 | `getSettingsSchema()` | 同步 | 返回界面数据；**必须快**，不做 IO |
 | `setSetting(key, value)` | oneway | 用户改了某项 |
 | `invokeAction(key)` | oneway | 用户点了某个 `ACTION` |
+| `getActionLabels()` | 同步 | v3：按钮文案覆盖表，见 §9 |
+| `deleteModel(role)` | oneway | v6：用户要删掉某个模型槽位的文件 |
 
-> 同步方法只有三个半（版本、就绪、状态、界面数据），它们都在**宿主的 Binder 线程**
+> 同步方法只有四个（版本、就绪、状态、界面数据、按钮文案），它们都在**宿主的 Binder 线程**
 > 上执行。加锁或等 worker 会占死宿主 16 个 Binder 线程里的一个，期间宿主所有 IPC
 > 都排队。所以实现里只读缓存字段。
 
@@ -229,6 +255,13 @@ class MyPluginActivator : PonkoActivatorActivity()
 | `onResult(bundle)` | 最终结果，**只发一次** |
 | `onError(err)` | 出错，**只发一次**；取消也走这里 |
 | `onSchemaChanged()` | 界面数据变了，请宿主重画 |
+| `onUiPatch(key, value, append)` | v4：原地改一个控件（日志/进度/状态） |
+| `onImage(fd, w, h, mime)` | v4：送结果图 |
+| `requestSynthesis()` | v7：请宿主发起一次合成（用户点了你页面里的按钮） |
+| `onAudioFile(key, fd, name)` | v7：给某条历史记录单独送音频 |
+| `selectTab(groupKey, tabKey)` | v8：请宿主切到你指定的那一页 |
+| `onImageWithKey(key, fd, …)` | v11：送图并指明贴到哪个 `IMAGE` |
+| `onScrollTo(key)` | v12：请宿主滚到某一项 |
 
 **`oneway` 没有背压**：插件发得快、宿主处理慢会在宿主侧排队，极端情况吃满
 1MB Binder 配额连累其它 IPC。所以基类给 `onStage` 加了 500ms 限流 ——
@@ -285,6 +318,21 @@ class MyPluginService : PonkoPluginService() {
 ```
 
 `createManifest()` 会在 Binder 线程上被调，**必须轻量且纯函数**。
+
+### 基类给你的出口（不用自己拼 Binder）
+
+| 方法 | 版本 | 作用 |
+|---|---|---|
+| `notifySchemaChanged()` | v2 | 界面数据变了，请宿主重画 |
+| `notifyUiPatch(key, value, append)` | v4 | 原地改一个控件，**不重画整页** |
+| `notifyImage(fd, w, h, mime)` / `notifyImage(file, …)` | v4 | 送结果图（只有一张 `IMAGE` 时可省略 key） |
+| `notifyImage(key, bitmap)` / `notifyImage(key, file)` | v11 | 送图并指明贴到哪个 `IMAGE`（多图时必须用） |
+| `notifyRequestSynthesis()` | v7 | 请宿主发起一次合成，参数用页面上填的 |
+| `notifyAudioFile(key, fd, name)` | v7 | 给某条历史记录单独送音频 |
+| `notifySelectTab(groupKey, tabKey)` | v8 | 请宿主切页 |
+| `notifyScrollTo(key)` | v12 | 请宿主滚到某一项 |
+
+`callback` 字段是 private 的 —— 没有这些方法你就调不到回调，只能自己存 IBinder。
 
 ### 能力（Capability）声明的是"承诺"，不是"现象"
 
@@ -548,6 +596,24 @@ return ResultBundle(
 
 这比只进 logcat 有用得多：普通用户装不了 adb，但他能截图。
 
+### 反过来：让宿主发起一次合成（v7 起）
+
+平时是宿主发 `synthesize` 给你。但也有反向的场景：你在自己的界面里放了一个
+「开始推理」按钮（`invokeAction`），希望走**宿主那条路**去合成 —— 因为宿主那边
+已经处理好了参数、参考音频 FD、进度显示、按钮状态。
+
+```kotlin
+override fun onActionInvoked(key: String) {
+    if (key == "start") notifyRequestSynthesis()
+}
+```
+
+等价于用户点了宿主那个「合成」按钮：**同一条路径**，所以参数校验、参考音频、
+进度回报、取消按钮全都一致 —— 没有第二条合成路径，也就没有第二套 bug。
+
+它和 `synthesize` 的区别：`synthesize` 是宿主命令你干活；这个是你请宿主下令，
+最后仍然会走到你的 `synthesizeBlocking`。
+
 ### 流式（可选）
 
 `req.streamAudio == true` 时用 `out.chunk(pcm, rate, ch, isFinal)` 边生成边推，
@@ -595,25 +661,230 @@ override fun onActionInvoked(key: String) { /* 做耗时活，做完 notifySchem
 >
 > 写文案时按"只有粗体和代码"来考虑布局，别指望列表和标题。
 
-### 12 种控件
+### 26 种控件
 
-| 类型 | 用途 | 关键字段 |
+分成三组看：**配置项**（用户改，走 `onSettingChanged`）、
+**过程与产物**（只显示，内容靠 `notifyUiPatch` / `notifyImage` 送）、
+**布局**（不产生控件，只改排布）。
+
+#### ① 配置项（v1–v2，12 种）
+
+| 类型 | 编号 | 用途 | 关键字段 |
+|---|---|---|---|
+| `INFO` | 0 | 一段说明文字 | `label` = 正文 |
+| `SECTION` | 1 | 分组标题（不可折叠） | `label` |
+| `SWITCH` | 2 | 开关 | `value` = `"true"` / `"false"` |
+| `SLIDER` | 3 | 数值滑块 | `min` / `max` / `step` / `value` |
+| `CHOICE` | 4 | 单选 | `options` + `value` |
+| `TEXT` | 5 | 单行输入 | `value` |
+| `ACTION` | 6 | 按钮 | `key`（点了走 `invokeAction`）；`value` 可点名宿主动作，见下文 |
+| `PROGRESS` | 7 | **只读**进度条 | 由宿主填，`value` 只是初值 |
+| `STATUS` | 8 | **只读**「键 → 值」状态行 | `label` / `value` |
+| `TEXTAREA` | 9 | 多行输入 | `value` |
+| `GROUP_START` | 10 | 可折叠分组开始 | `label` = 标题，`key` 记住折叠状态 |
+| `GROUP_END` | 11 | 分组结束 | — |
+
+#### ② 过程与产物（v4 起，3 种）
+
+| 类型 | 编号 | 用途 | 内容从哪来 |
+|---|---|---|---|
+| `LOG` | 12 | 日志框（等宽、可长按复制） | `notifyUiPatch(key, text, append = true)` |
+| `IMAGE` | 13 | 结果图 | `notifyImage(...)` |
+| `AUDIO` | 14 | 播放条（播放 / 进度 / 时间 / 保存） | `notifyAudioFile(key, fd, name)` |
+
+这三种**不参与 `setSetting`** —— 用户改不了它们的值，`patch` 也只认前两种
+（`IMAGE` 走 `notifyImage`，`AUDIO` 是宿主的播放器）。
+
+#### ③ 布局（v5 起，11 种）
+
+| 类型 | 编号 | 说明 |
 |---|---|---|
-| `INFO` | 一段说明文字 | `label` = 正文 |
-| `SECTION` | 分组标题（不可折叠） | `label` |
-| `SWITCH` | 开关 | `value` = `"true"` / `"false"` |
-| `SLIDER` | 数值滑块 | `min` / `max` / `step` / `value` |
-| `CHOICE` | 单选 | `options` + `value` |
-| `TEXT` | 单行输入 | `value` |
-| `ACTION` | 按钮 | `key`（点了走 `invokeAction`） |
-| `PROGRESS` | **只读**进度条 | `value` = 0–100 百分比字符串 |
-| `STATUS` | **只读**「键 → 值」状态行 | `label` / `value` |
-| `TEXTAREA` | 多行输入 | `value` |
-| `GROUP_START` | 可折叠分组开始 | `label` = 标题，`key` 记住折叠状态 |
-| `GROUP_END` | 分组结束 | — |
+| `TABS_START` | 15 | 标签页组开始。`key` 记住"上次停在哪页" |
+| `TAB` | 16 | 一页开始。`key` 给 `notifySelectTab` 用 |
+| `TABS_END` | 17 | 标签页组结束 |
+| `MODEL_SLOT` | 18 | 模型文件槽位，`value` = `ROLE_*`（见 §9.x） |
+| `HOST_SLOT` | 19 | 宿主功能块的挂载坑，`value` 可分段 |
+| `ROW_START` / `ROW_END` | 20 / 21 | 横向一行，`value` 控宽度占比 |
+| `GRID_START` / `GRID_END` | 22 / 23 | 等宽网格，`value` = 列数 |
+| `DIVIDER` | 24 | 一条分割线（放进 ROW 会变竖线） |
+| `SPACER` | 25 | 空白占位（纵向 = 高度；ROW/GRID 里 = 权重） |
 
-`UiType.MAX_KNOWN = 11` 是宿主认识的最大编号。你用了更大的值，宿主只能降级成
-纯文本（不会崩，但控件没了）。**所以这个集合是宿主侧一次放够的，插件不要指望加新类型。**
+`UiType.MAX_KNOWN = 25` 是宿主认识的最大编号。你用了更大的值，宿主只能降级成
+纯文本（不会崩，但控件没了）。**这个集合是宿主侧一次放够的，插件不要指望加新类型。**
+
+### 标签页（v5 起）
+
+```kotlin
+UiItem("t", UiType.TABS_START, value = "param")   // value = 默认页的 key
+UiItem("p", UiType.TAB, label = "参数")
+UiItem("txt", UiType.TEXTAREA, label = "要合成的内容")
+UiItem("r", UiType.TAB, label = "结果")
+UiItem("cmp", UiType.AUDIO, label = "合成结果")
+UiItem("", UiType.TABS_END)
+```
+
+| 规则 | 说明 |
+|---|---|
+| `TAB` 之后的项都属于这一页，直到下一个 `TAB` 或 `TABS_END` | 顺序语义，不是"分组" |
+| `TABS_START.value` = 默认选中的那一页 key | 用户切过页之后，宿主记住的是**用户的选择** |
+| 最外层那组可左右滑动；嵌在别处的不可滑 | 嵌套 pager 的横向手势会和整页纵向滚动打架 |
+| 可以嵌套（页中页） | 层数不限，但手机上超过两层就难用了 |
+
+自己切页用 `notifySelectTab(groupKey, tabKey)`（v8）——**宿主不会替你切**。
+
+### 模型槽位（v6 起）
+
+插件要用户"挑一个模型文件"时用它，不要自己写文件选择器：
+
+```kotlin
+UiItem("m", UiType.MODEL_SLOT, label = "主模型", value = PluginConst.ROLE_MAIN)
+```
+
+宿主负责：弹文件选择器、复制到你的**私有目录**、回报路径、显示文件名和体积、
+以及「删除」。你只从 `models` 参数里拿现成的 `File`。
+
+`value` 用 `ROLE_MAIN` / `ROLE_BASE_LM` / `ROLE_ACOUSTIC` / `ROLE_MMPROJ` /
+`ROLE_VAE` / `ROLE_TOKENIZER` —— 这些是**槽位身份**，同一 role 只能放一个文件。
+用自定义字符串也行，只是宿主不认它的语义。
+
+### 宿主功能块：`HOST_SLOT`（v7 起，v9.1 可分段）
+
+那排「加载 / 合成 / 播放 / 停止 / 保存」默认钉在标题下面。放一个 `HOST_SLOT`
+就能把它搬到你指定的位置：
+
+```kotlin
+UiItem("", UiType.HOST_SLOT)     // 整块搬过来
+```
+
+整块搬过来时块内顺序是写死的：**标题 → 按钮行 → 参数区 → 诊断**。
+想自己排，就按段搬：
+
+| `value` | 搬什么 |
+|---|---|
+| `"actions"` | 「功能」标题 + 按钮行 + 动作说明 + 状态提示（"正在合成…"） |
+| `"params"` | 宿主试听参数区（目标文本 / 模式 / 参考音频 / 逐字稿 / 种子 / 线程） |
+| `"diag"` | 诊断信息（默认折叠） |
+| 空 | 整块（默认） |
+
+```kotlin
+UiItem("txt", UiType.TEXTAREA, label = "要合成的内容")
+UiItem("", UiType.HOST_SLOT, value = "actions")     // 开始推理按钮，在文本下面
+UiItem("log", UiType.LOG, label = "进度")            // 进度条，在按钮下面
+```
+
+| 规则 | 说明 |
+|---|---|
+| 每段只认**第一个**坑 | 写两个 `actions` 坑时第二个是空的 |
+| 没挖的段**回顶部** | 只挖 `actions` 的话参数区照样在标题下面（否则你没地方填文本） |
+| 整块和分段**互斥**（同一帧） | 混着写时整块那几个坑拿到 null |
+| 分段名写错 | 按**整块**处理 + logcat 一行警告 |
+| 三段全被挖走 | 顶部不占位（不会留一张空卡片） |
+
+**为什么不让插件重画整个功能块**：那排按钮背后是宿主的状态机（引擎加载到几成、
+是否正在合成、参考音频 FD、保存到音乐库）。你重画就得把这些也搬过去，
+两边各存一份必然打架。这里只改**挂载点**，逻辑仍然只有一份。
+
+### 点名宿主动作：`ACTION` 的 `value`（v9 起）
+
+`ACTION` 平时是你的按钮（点击走 `invokeAction`）。如果 `value` 写成一个宿主动作 id，
+它就变成**那个宿主按钮**，画到你放的位置：
+
+```kotlin
+UiItem("start", UiType.ACTION, value = HostActionId.REASONING)
+```
+
+| `HostActionId` | 宿主动作 |
+|---|---|
+| `ENGINE` | 加载 / 卸载引擎（同一个按钮的两个状态） |
+| `REASONING` | 合成（只产文件，不播放） |
+| `PLAY` | 重放上一次的产物 |
+| `STOP` | 停止（真打断） |
+| `SAVE` | 存进系统「音乐/Ponko」 |
+
+被点名的按钮会**从顶部那排消失**（不重复出现），文案仍可用 `ActionLabel` 覆盖。
+
+> 这是"搬家"不是"新建"：你无法让宿主多给一个动作，只能决定它画在哪。
+
+### 自己排布局（v10 起）
+
+`items` 从 v2 起一直是**纯纵向单列**，"两个滑块并排"都做不到。v10 加了容器：
+
+```kotlin
+// 一行两个滑块，各占一半
+UiItem("", UiType.ROW_START)
+UiItem("speed", UiType.SLIDER, label = "语速", …)
+UiItem("pitch", UiType.SLIDER, label = "音高", …)
+UiItem("", UiType.ROW_END)
+
+// 宽度 1:2
+UiItem("", UiType.ROW_START, value = "1,2")
+
+// 三列按钮矩阵，第 4 个自动换行
+UiItem("", UiType.GRID_START, value = "3")
+UiItem("v1", UiType.ACTION, label = "音色 A")
+UiItem("v2", UiType.ACTION, label = "音色 B")
+UiItem("v3", UiType.ACTION, label = "音色 C")
+UiItem("v4", UiType.ACTION, label = "音色 D")
+UiItem("", UiType.GRID_END)
+```
+
+| 容器 | `value` |
+|---|---|
+| `ROW_START` | 空 = 等分；`"1,2"` = 按份数分。份数不够按 1 补，`0`/负数按 1 |
+| `GRID_START` | 列数 2~4，空/写错 = 2。**每列等宽**；上限 4（5 列以上文字全被省略号吃掉） |
+
+和 `GROUP_START` / `TABS_START` 一样是栈式语法，**可以任意嵌套**：
+ROW 里放 GROUP、GROUP 里放 ROW、TABS 里放 GRID 都行。
+
+| 适合放进 ROW/GRID | 不适合（能放但会很窄） |
+|---|---|
+| `SLIDER` `TEXT` `SWITCH` `ACTION` `CHOICE` `STATUS` `INFO` | `TEXTAREA` `LOG` `IMAGE` `TABS_START` |
+
+网格最后一行不满时**不占位** —— 三个格子放在 3 列网格里，第二行那个仍只有 1/3 宽，
+右边是空白，不会因为"只剩一个"就拉满整行。
+
+**`SPACER` 是 ROW 的关键补充**：没有它 ROW 只能等分，做不出"左边一组、右边一组"。
+
+```kotlin
+UiItem("", UiType.ROW_START, value = "1,2,1")
+UiItem("save", UiType.ACTION, label = "保存")
+UiItem("", UiType.SPACER)            // 占中间 2 份，把两边推开
+UiItem("load", UiType.ACTION, label = "加载")
+UiItem("", UiType.ROW_END)
+```
+
+### 样式不归你管
+
+| 归插件 | 归宿主 |
+|---|---|
+| 有哪些控件 | 颜色（全部走宿主主题） |
+| 顺序、分组、标签页 | 字号、行高 |
+| 横向 / 网格 / 任意嵌套 | 圆角、内边距 |
+| 每项宽度占比 | 深色模式适配 |
+
+**结构全自由，样式零自由。** 理由不是保守：插件读不到宿主的主题对象，
+自己写颜色必然出现两套配色，用户切主题时那些控件会留在旧色里。
+
+### 宿主不会替你做决定
+
+这一条比任何单个控件都重要。宿主对你界面的行为**只有两类**：
+
+1. **控件本身语义** —— 滑块拖动、开关切换、单选高亮、分组折叠
+2. **宿主自己那摊事** —— 播放条反映播放器状态、动作按钮什么时候可点
+
+除此之外**默认什么都不做**。所以：
+
+| 你想要 | 你得自己说 |
+|---|---|
+| 切到某一页 | `notifySelectTab(groupKey, tabKey)` |
+| 滚到某一项 | `notifyScrollTo(key)` |
+| 图贴到哪个 `IMAGE` | `notifyImage(key, bitmap)` |
+| 日志滚到底 | 不用管：你在底部它才跟随，翻历史时不会把你拽回去 |
+| 重画后停在哪儿 | 不用管：位置由覆盖情况决定，宿主不写回旧值 |
+
+**目标不明确时宿主一律丢弃并留日志，不猜。** 猜对是省你一个 key，
+猜错是"东西出现在不该出现的地方，而且看起来像是插件自己干的"——
+那种错最难查，因为你会先怀疑自己的代码。
 
 ### 值归插件管
 
@@ -653,6 +924,18 @@ override fun onActionInvoked(key: String) { /* 做耗时活，做完 notifySchem
 
 所以：**你不需要在自己的 `UiSchema` 里再放一个"合成"或"播放"按钮** ——
 宿主已经处理了。把界面留给真正属于插件的东西（模型选择、音色、参数、下载）。
+
+#### 只想保留其中几个？
+
+在 manifest 里加一行 `ponko.actions`，见 §3 的 ⑦。**不用改代码、不用重编 SDK。**
+
+#### 「合成」和「停止」共用同一格
+
+这两个是**互斥**的：没在合成时只有「合成」有意义，合成中只有「停止」有意义。
+所以它们占**同一格**，按下开始后「合成」消失、「停止」顶上来，位置和宽度都不变。
+
+这是宿主内部排版，你不需要为此做什么 —— 但如果你用 `HostActionId` 把 `REASONING`
+**搬走**了，那 `STOP` 会独占一格（不会留一个空槽）。
 
 > **合成和播放是两个独立动作，各有各的按钮。** 用户听完想再听一遍是**高频**操作，
 > 而手机上重新合成要等 1~2 分钟 —— 所以别指望"合成完自动播"能省一个按钮，
@@ -725,12 +1008,44 @@ override fun buildActionLabels(): Map<String, String> = mapOf(
 ## 10. 兼容性：版本号怎么抬
 
 ```kotlin
-const val API_VERSION = 3                   // AIDL 表面版本，任何改动都 +1
-const val API_WITH_SCHEMA = 2               // 从这一版起有界面那组方法
-const val API_WITH_ACTION_LABELS = 3        // 从这一版起能改按钮文案
+const val API_VERSION = 12                  // AIDL 表面版本，任何改动都 +1
+const val API_WITH_SCHEMA = 2               // 界面那组方法
+const val API_WITH_ACTION_LABELS = 3        // 能改按钮文案
+const val API_WITH_RICH_UI = 4              // 日志框 / 结果图 / 播放条，onUiPatch
+const val API_WITH_TABS = 5                 // 标签页
+const val API_WITH_MODEL_IMPORT = 6         // 模型槽位 + deleteModel
+const val API_WITH_SYNTH_REQUEST = 7        // 反向请求合成 / 逐条音频 / HOST_SLOT
+const val API_WITH_TAB_SELECT = 8           // 插件主动切页
+const val API_WITH_HOST_ACTION_ITEMS = 9    // ACTION 可点名宿主动作
+const val API_WITH_LAYOUT_CONTAINERS = 10   // ROW / GRID / DIVIDER / SPACER
+const val API_WITH_IMAGE_KEY = 11           // 送图可指定目标控件
+const val API_WITH_SCROLL_TO = 12           // 插件控制滚动位置
 const val API_MIN_SUPPORTED = 1             // 宿主接受的最老插件
-const val API_MAX_SUPPORTED = 3             // 宿主接受的最新插件
+const val API_MAX_SUPPORTED = 12            // 宿主接受的最新插件
 ```
+
+### 每个版本加了什么
+
+| 版本 | 内容 | 在老宿主上会怎样 |
+|---|---|---|
+| v1 | 引擎 + 合成 + 音频回传 | — |
+| v2 | `UiSchema` 界面 | 没有界面页 |
+| v3 | 按钮文案可覆盖 | 用宿主默认文案 |
+| v4 | `LOG` / `IMAGE` / `AUDIO`、`onUiPatch`、`GROUP_*` | 这三种控件降级成文字块 |
+| v5 | `TABS_*` | 标签页降级，内容全堆在顶部 |
+| v6 | `MODEL_SLOT` + `deleteModel` | 槽位降级，用户没法选模型文件 |
+| v7 | `requestSynthesis` / `onAudioFile` / `HOST_SLOT` | 功能块仍在标题下面，历史记录只能播最近一条 |
+| v8 | `selectTab` | 标签页只能用户自己点 |
+| v9 | `HostActionId` | 功能按钮只能在顶部 |
+| v10 | `ROW` / `GRID` / `DIVIDER` / `SPACER` | **整页只剩纵向一列**，并排的会上下叠 |
+| v11 | `onImageWithKey` | 多图时只能贴第一张 |
+| v12 | `onScrollTo` | 位置由宿主默认行为决定，不能主动跳 |
+
+写兼容代码时判 `pluginApi >= API_WITH_xxx`，**不要**判 `== 最新版`。
+
+> v10 那一行最值得注意：布局容器在老宿主上不是"稍微难看"，而是**结构塌掉**。
+> 如果你的插件排了 ROW 却要跑在老宿主上，至少保证纵向依次排列时仍然可用
+> （也就是：ROW 里的项单独拿出来也不会看不懂）。
 
 ### 两类改动
 
@@ -845,6 +1160,11 @@ Binder 全进程只有 1 MB 配额。传 `ByteArray` 超过这个量会炸，
 - [ ] `intro` / `label` / `help` 都是按纯文本写的，没用 markdown 的列表和标题
 - [ ] 覆盖过的按钮文案 ≤ 12 字符，且没覆盖的那几个仍然显示宿主默认（不是空按钮）
 - [ ] 改过名字的按钮，点下去干的事和提示文字仍然对得上（没把「停止」说成别的）
+- [ ] 多个 `IMAGE` 控件时用的是 `notifyImage(key, bitmap)`，不是无 key 版本
+- [ ] 想在重画后跳到某处时用了 `notifyScrollTo(key)`（别指望宿主自动跳）
+- [ ] 嵌在 ROW / GRID 里的控件，在窄半屏下文案没有被省略号吃掉
+- [ ] 用了 v10+ 的布局容器，且在只有一列的极端情况下仍然能读懂
+- [ ] `ponko.actions` 里写的 id 都是这个插件真有的动作（拼错的会被丢弃）
 - [ ] 停用后插件的模型内存确实释放了
 - [ ] 改过 AIDL 的话：SDK 已重发，插件已重编
 - [ ] 判包看 **sha256**，不是字节数（相邻版本字节数可能完全相同）
